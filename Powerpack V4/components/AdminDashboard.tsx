@@ -3,7 +3,7 @@ import { UserProfile, UserRole, VideoLog, CreditRequest, IntegrationConfig } fro
 import { api } from '../services/api';
 import { 
   LayoutDashboard, Users, CreditCard, Settings, LogOut, 
-  Plus, Video, BarChart3, Database, MessageSquare
+  Plus, Video, Trash2, Key 
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
@@ -127,6 +127,10 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   const [showModal, setShowModal] = useState(false);
   const [newPacker, setNewPacker] = useState({ name: '', mobile: '', pin: '' });
   const [loading, setLoading] = useState(false);
+  
+  // State for Edit PIN
+  const [editPacker, setEditPacker] = useState<any | null>(null);
+  const [newPin, setNewPin] = useState('');
 
   const fetchPackers = () => {
       api.getPackers(user.id).then(setPackers).catch(console.error);
@@ -138,16 +142,50 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
   const handleCreatePacker = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (newPacker.pin.length < 6) {
+        alert("PIN must be 6 digits");
+        return;
+    }
     setLoading(true);
     try {
         await api.createPacker(user.id, newPacker);
         setShowModal(false);
         setNewPacker({ name: '', mobile: '', pin: '' });
         fetchPackers();
+        alert('Packer Created Successfully');
     } catch (err: any) {
         alert('Failed to create packer: ' + err.message);
     } finally {
         setLoading(false);
+    }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (confirm(`Are you sure you want to delete packer "${name}"? This cannot be undone.`)) {
+        try {
+            await api.deletePacker(id);
+            fetchPackers();
+            alert('Packer deleted');
+        } catch (e: any) {
+            alert('Delete failed: ' + e.message);
+        }
+    }
+  };
+
+  const handleUpdatePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editPacker) return;
+    if (newPin.length < 6) {
+        alert("PIN must be 6 digits");
+        return;
+    }
+    try {
+        await api.updatePackerPin(editPacker.id, newPin);
+        alert('PIN Updated Successfully');
+        setEditPacker(null);
+        setNewPin('');
+    } catch (e: any) {
+        alert('Update failed: ' + e.message);
     }
   };
 
@@ -165,7 +203,7 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {packers.map(packer => (
-          <div key={packer.id} className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+          <div key={packer.id} className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 relative group">
               <div className="flex items-center gap-3 mb-3">
                 <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold">
                     {packer.name.charAt(0)}
@@ -180,11 +218,34 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                     <span className="text-slate-500">Mobile</span>
                     <span className="font-medium text-slate-700">{packer.mobile || 'N/A'}</span>
                 </div>
+                <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">PIN</span>
+                    <span className="font-medium text-slate-700 tracking-widest">••••••</span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-100">
+                  <button 
+                      onClick={() => { setEditPacker(packer); setNewPin(''); }}
+                      className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="Change PIN"
+                  >
+                      <Key size={18} />
+                  </button>
+                  <button 
+                      onClick={() => handleDelete(packer.id, packer.name)}
+                      className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Delete Packer"
+                  >
+                      <Trash2 size={18} />
+                  </button>
               </div>
           </div>
         ))}
       </div>
 
+      {/* Add Packer Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
@@ -201,15 +262,51 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                             value={newPacker.mobile} onChange={e => setNewPacker({...newPacker, mobile: e.target.value})} />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium mb-1">4-Digit PIN</label>
-                        <input required type="text" maxLength={4} className="w-full border rounded-lg p-2" 
-                            value={newPacker.pin} onChange={e => setNewPacker({...newPacker, pin: e.target.value})} />
+                        <label className="block text-sm font-medium mb-1">6-Digit PIN</label>
+                        <input 
+                            required 
+                            type="text" 
+                            maxLength={6} 
+                            minLength={6}
+                            className="w-full border rounded-lg p-2" 
+                            value={newPacker.pin} 
+                            onChange={e => setNewPacker({...newPacker, pin: e.target.value.replace(/\D/g,'')})} 
+                            placeholder="123456"
+                        />
                     </div>
                     <div className="flex gap-3 mt-6">
                         <button type="button" onClick={() => setShowModal(false)} className="flex-1 px-4 py-2 border rounded-lg hover:bg-slate-50">Cancel</button>
                         <button type="submit" disabled={loading} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
                             {loading ? 'Creating...' : 'Create'}
                         </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+      )}
+
+      {/* Change PIN Modal */}
+      {editPacker && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 w-full max-w-sm shadow-2xl">
+                <h3 className="text-lg font-bold mb-4">Change PIN for {editPacker.name}</h3>
+                <form onSubmit={handleUpdatePin} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">New 6-Digit PIN</label>
+                        <input 
+                            required 
+                            type="text" 
+                            maxLength={6} 
+                            minLength={6}
+                            className="w-full border rounded-lg p-2 text-center text-2xl tracking-widest" 
+                            value={newPin} 
+                            onChange={e => setNewPin(e.target.value.replace(/\D/g,''))} 
+                            placeholder="******"
+                        />
+                    </div>
+                    <div className="flex gap-3 mt-6">
+                        <button type="button" onClick={() => setEditPacker(null)} className="flex-1 px-4 py-2 border rounded-lg hover:bg-slate-50">Cancel</button>
+                        <button type="submit" className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Update</button>
                     </div>
                 </form>
             </div>
@@ -289,7 +386,6 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
         <div className="max-w-2xl mx-auto space-y-6">
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                 <h3 className="font-bold text-lg mb-4">Integrations</h3>
-                {/* Config UI same as before */}
                 <div className="space-y-4">
                      <div>
                         <label className="block text-sm font-medium mb-1">WhatsApp Provider</label>
