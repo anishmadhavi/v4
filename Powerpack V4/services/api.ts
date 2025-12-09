@@ -22,47 +22,71 @@ export const api = {
   },
 
   async createPacker(adminId: string, packerData: { name: string; mobile: string; pin: string }) {
-    // In a real app, this calls an edge function to create a supabase auth user safely
+    // Get secure session token
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    // Call edge function
     const response = await fetch(`${FUNCTION_BASE_URL}/admin-create-user`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+            'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({ ...packerData, role: 'packer', admin_id: adminId })
     });
 
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(errorText || 'Failed to create packer');
+        try {
+            const jsonErr = JSON.parse(errorText);
+            throw new Error(jsonErr.error || jsonErr.message || 'Failed to create packer');
+        } catch (e) {
+             throw new Error(errorText || 'Failed to create packer');
+        }
     }
 
-    // FIX: Check if response has body before parsing JSON
     const text = await response.text();
     return text ? JSON.parse(text) : { success: true };
   },
 
   async deletePacker(packerId: string) {
-    // Option 1: Call Edge Function (Recommended if you need to delete Auth User too)
-    /*
-    const response = await fetch(`${FUNCTION_BASE_URL}/admin-delete-user`, {
-        method: 'POST', // or DELETE
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-user-actions`, {
+        method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+            'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({ user_id: packerId })
+        body: JSON.stringify({ action: 'delete', user_id: packerId })
     });
-    if (!response.ok) throw new Error('Failed to delete packer');
-    */
 
-    // Option 2: Direct DB Delete (Relies on RLS allowing Admins to delete their packers)
-    const { error } = await supabase
-        .from('profiles')
-        .delete()
-        .eq('id', packerId);
-    
-    if (error) throw error;
+    if (!response.ok) {
+        const err = await response.text(); 
+        throw new Error('Failed to delete packer: ' + err);
+    }
+    return true;
+  },
+
+  async updatePackerPin(packerId: string, newPin: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-user-actions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'update_pin', user_id: packerId, new_pin: newPin })
+    });
+
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error('Failed to update PIN: ' + err);
+    }
     return true;
   },
 
@@ -98,7 +122,6 @@ export const api = {
   // --- Upload Flow ---
 
   async getUploadToken(filename: string, contentType: string) {
-    // Step 1: Get Signed URL from Edge Function
     const session = (await supabase.auth.getSession()).data.session;
     const response = await fetch(`${FUNCTION_BASE_URL}/delegate-upload-token?filename=${filename}&contentType=${contentType}`, {
         headers: {
@@ -106,11 +129,10 @@ export const api = {
         }
     });
     if (!response.ok) throw new Error('Failed to get upload token');
-    return response.json(); // Expected: { uploadUrl: '...' }
+    return response.json(); 
   },
 
   async completeFulfillment(data: { awb: string; videoUrl: string; duration?: number }) {
-    // Step 3: Webhook to trigger processing
     const session = (await supabase.auth.getSession()).data.session;
     const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
         method: 'POST',
@@ -125,7 +147,6 @@ export const api = {
         throw new Error('Fulfillment failed');
     }
 
-    // FIX: Safety check for empty response body
     const text = await response.text();
     return text ? JSON.parse(text) : { success: true };
   },
@@ -160,20 +181,17 @@ export const api = {
   },
 
   async processCreditRequest(requestId: string, status: 'approved' | 'rejected') {
-    // Complex logic (transaction) should be in Edge Function, but simple update here
     const { error } = await supabase.from('credit_requests').update({ status }).eq('id', requestId);
     if (error) throw error;
-    
-    // If approved, trigger function to add credits (or trigger via database webhook)
-    if (status === 'approved') {
-        // Call edge function to safely increment credits
-        // fetch(`${FUNCTION_BASE_URL}/add-credits`, ...)
-    }
   },
   
   // --- Admin Data ---
   async getPackers(adminId: string) {
-      const { data, error } = await supabase.from('profiles').select('*').eq('role', 'packer').eq('organization_id', adminId);
+      const { data, error } = await supabase.from('profiles')
+        .select('*')
+        .eq('role', 'packer')
+        .eq('organization_id', adminId);
+      
       if (error) throw error;
       return data;
   },
