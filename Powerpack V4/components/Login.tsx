@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Video, Lock, User, Phone, CheckCircle2 } from 'lucide-react';
+import { Video, Lock, User, Phone, CheckCircle2, ArrowRight } from 'lucide-react';
 
 const Login: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'admin' | 'packer'>('packer');
@@ -25,7 +25,7 @@ const Login: React.FC = () => {
       let loginPassword = '';
 
       if (activeTab === 'packer') {
-        // --- CRITICAL FIX: Add the domain suffix automatically ---
+        // Auto-append domain for packers
         if (!mobile || !pin) throw new Error('Please fill in all fields');
         loginEmail = `${mobile}@packer.app`;
         loginPassword = pin;
@@ -36,27 +36,35 @@ const Login: React.FC = () => {
         loginPassword = password;
       }
 
-      // Attempt Supabase Login
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email: loginEmail,
         password: loginPassword,
       });
 
       if (error) throw error;
       
-      // Login Successful! App.tsx will handle the redirect.
-
     } catch (err: any) {
       console.error(err);
-      // specific error handling
       if (err.message === 'Invalid login credentials') {
-         setError('Invalid Mobile Number or PIN. (Check if PIN is correct)');
+         setError('Invalid credentials. If you are a packer, check your Mobile/PIN.');
       } else {
          setError(err.message);
       }
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleForgotPassword = () => {
+    const emailToReset = activeTab === 'admin' ? email : '';
+    if (!emailToReset) {
+        alert("Please enter your email address first.");
+        return;
+    }
+    supabase.auth.resetPasswordForEmail(emailToReset).then(({ error }) => {
+        if (error) alert(error.message);
+        else alert("Password reset link sent to your email.");
+    });
   };
 
   return (
@@ -99,7 +107,7 @@ const Login: React.FC = () => {
         </div>
 
         {/* Login Form */}
-        <div className="p-8">
+        <div className="p-8 pb-4">
           <form onSubmit={handleLogin} className="space-y-5">
             
             {activeTab === 'packer' ? (
@@ -191,9 +199,32 @@ const Login: React.FC = () => {
             </button>
           </form>
         </div>
-        
-        <div className="bg-slate-50 p-4 text-center text-xs text-slate-400 border-t border-slate-100">
-          Secure Video Fulfillment Platform
+
+        {/* Footer Links */}
+        <div className="bg-slate-50 px-8 py-4 border-t border-slate-100 space-y-3">
+            <div className="flex justify-between items-center text-sm">
+                <button 
+                    type="button" 
+                    onClick={handleForgotPassword}
+                    className="text-slate-500 hover:text-blue-600 font-medium transition-colors"
+                >
+                    Forgot credentials?
+                </button>
+                
+                {activeTab === 'admin' && (
+                    <button 
+                        type="button"
+                        className="text-blue-600 hover:text-blue-700 font-bold flex items-center gap-1 group"
+                        onClick={() => alert("Please contact Super Admin to create a new organization account.")}
+                    >
+                        Create Account <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+                    </button>
+                )}
+            </div>
+            
+            <div className="text-center text-xs text-slate-400 pt-2">
+                 v1.0.0 • Secure Video Fulfillment Platform
+            </div>
         </div>
       </div>
     </div>
