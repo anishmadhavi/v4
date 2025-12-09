@@ -22,11 +22,9 @@ export const api = {
   },
 
   async createPacker(adminId: string, packerData: { name: string; mobile: string; pin: string }) {
-    // Get secure session token
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
 
-    // Call edge function
     const response = await fetch(`${FUNCTION_BASE_URL}/admin-create-user`, {
         method: 'POST',
         headers: {
@@ -90,12 +88,56 @@ export const api = {
     return true;
   },
 
+  // --- Integrations & Google ---
+
   async updateIntegrationConfig(userId: string, config: any) {
     const { error } = await supabase
       .from('profiles')
       .update({ integrations: config })
       .eq('id', userId);
     if (error) throw error;
+  },
+
+  async initiateGoogleAuth(adminId: string) {
+    // Redirects browser to the Google Auth flow via Edge Function
+    // The Edge Function will construct the Google URL and redirect the user
+    window.location.href = `${FUNCTION_BASE_URL}/google-auth?action=connect&admin_id=${adminId}`;
+  },
+
+  async getDriveFolders() {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return [];
+
+    // Call google-auth function to fetch real folders
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'list_folders' })
+    });
+
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.folders || [];
+  },
+
+  async createDriveFolder(folderName: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No session");
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'create_folder', name: folderName })
+    });
+
+    if (!response.ok) throw new Error("Failed to create folder");
+    return await response.json(); // returns { id: '...', name: '...' }
   },
 
   // --- Logs & Videos ---
@@ -177,11 +219,6 @@ export const api = {
         amount: amount,
         status: 'pending'
     });
-    if (error) throw error;
-  },
-
-  async processCreditRequest(requestId: string, status: 'approved' | 'rejected') {
-    const { error } = await supabase.from('credit_requests').update({ status }).eq('id', requestId);
     if (error) throw error;
   },
   
