@@ -1,135 +1,186 @@
-// src/services/api.ts (or Powerpack V4/services/api.ts)
+import { supabase } from '../lib/supabase';
+import { UserProfile, VideoLog, CreditRequest, UserRole } from '../types';
 
-import { Packer, VideoLog, CreditRequest, IntegrationConfig, User } from "../types";
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ""; 
-// If you are not calling any external backend yet and only using Supabase directly,
-// you can leave this as "" for now or adjust to your API URL later.
-
-/**
- * Helper: throw readable errors if request fails.
- */
-async function ensureOk(res: Response, defaultMessage: string) {
-  if (res.ok) return;
-
-  let msg = defaultMessage;
-  try {
-    const text = await res.text();
-    if (text) msg = text;
-  } catch {
-    // ignore
-  }
-
-  throw new Error(msg + ` (status ${res.status})`);
-}
+// Mock function URL prefix (would be your actual Supabase Function URL in production)
+const FUNCTION_BASE_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1';
 
 export const api = {
-  /**
-   * Create a new packer for a given admin/organization.
-   * We DO NOT parse JSON here because many backends respond with 201/204 and empty body.
-   */
-  async createPacker(
-    adminId: string,
-    packer: { name: string; mobile: string; pin: string }
-  ): Promise<void> {
-    // If you are using a custom backend API, change the URL below.
-    // If you are using Supabase directly from frontend, you may not even need fetch at all –
-    // your Supabase client would go here instead.
-    const res = await fetch(`${API_BASE_URL}/packers`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        adminId,
-        name: packer.name,
-        mobile: packer.mobile,
-        pin: packer.pin,
-      }),
+  // --- Auth & Profiles ---
+  
+  async getProfile(userId: string): Promise<UserProfile | null> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (error) {
+      console.error('Error fetching profile:', error);
+      return null;
+    }
+    return data as UserProfile;
+  },
+
+  async createPacker(adminId: string, packerData: { name: string; mobile: string; pin: string }) {
+    // In a real app, this calls an edge function to create a supabase auth user safely
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-create-user`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+        },
+        body: JSON.stringify({ ...packerData, role: 'packer', admin_id: adminId })
     });
 
-    // ✅ Will throw an error if HTTP status is not 2xx,
-    //    but will NOT try to parse JSON on success.
-    await ensureOk(res, "Failed to create packer");
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to create packer');
+    }
 
-    // No res.json() here – that’s what was causing:
-    // "Unexpected end of JSON input"
-    return;
+    // FIX: Check if response has body before parsing JSON
+    const text = await response.text();
+    return text ? JSON.parse(text) : { success: true };
   },
 
-  /**
-   * Fetch packers for an admin.
-   * You can adapt this to your actual backend / Supabase structure.
-   */
-  async getPackers(adminId: string): Promise<Packer[]> {
-    const res = await fetch(`${API_BASE_URL}/packers?adminId=${encodeURIComponent(adminId)}`);
-    await ensureOk(res, "Failed to fetch packers");
-    // Here we expect a JSON array
-    return res.json();
-  },
-
-  /**
-   * Example: get logs (if you are using an HTTP API for that).
-   * Adapt or remove if you instead read directly from Supabase in your components.
-   */
-  async getVideoLogs(adminId: string): Promise<VideoLog[]> {
-    const res = await fetch(`${API_BASE_URL}/videos?adminId=${encodeURIComponent(adminId)}`);
-    await ensureOk(res, "Failed to fetch logs");
-    return res.json();
-  },
-
-  /**
-   * Example: resend WhatsApp for a specific log.
-   * This is optional and depends on your backend.
-   */
-  async resendWhatsapp(videoId: string): Promise<void> {
-    const res = await fetch(`${API_BASE_URL}/videos/${videoId}/resend-whatsapp`, {
-      method: "POST",
+  async deletePacker(packerId: string) {
+    // Option 1: Call Edge Function (Recommended if you need to delete Auth User too)
+    /*
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-delete-user`, {
+        method: 'POST', // or DELETE
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+        },
+        body: JSON.stringify({ user_id: packerId })
     });
-    await ensureOk(res, "Failed to resend WhatsApp");
+    if (!response.ok) throw new Error('Failed to delete packer');
+    */
+
+    // Option 2: Direct DB Delete (Relies on RLS allowing Admins to delete their packers)
+    const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', packerId);
+    
+    if (error) throw error;
+    return true;
   },
 
-  /**
-   * Example: create a credit request.
-   */
-  async createCreditRequest(
-    adminId: string,
-    creditsRequested: number
-  ): Promise<void> {
-    const res = await fetch(`${API_BASE_URL}/credit-requests`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ adminId, creditsRequested }),
-    });
-    await ensureOk(res, "Failed to create credit request");
+  async updateIntegrationConfig(userId: string, config: any) {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ integrations: config })
+      .eq('id', userId);
+    if (error) throw error;
   },
 
-  /**
-   * Example: save integration settings (WhatsApp, Shopify, etc.).
-   */
-  async saveIntegrationConfig(
-    adminId: string,
-    config: IntegrationConfig
-  ): Promise<void> {
-    const res = await fetch(`${API_BASE_URL}/integration-config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ adminId, config }),
-    });
-    await ensureOk(res, "Failed to save integration settings");
+  // --- Logs & Videos ---
+
+  async getLogs(userId: string, role: UserRole): Promise<VideoLog[]> {
+    let query = supabase.from('video_logs').select('*, profiles:packer_id(name)').order('created_at', { ascending: false });
+    
+    if (role === UserRole.ADMIN) {
+      query = query.eq('admin_id', userId);
+    } else if (role === UserRole.PACKER) {
+      query = query.eq('packer_id', userId);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    
+    // Flatten packer name
+    return data.map((log: any) => ({
+      ...log,
+      packer_name: log.profiles?.name || 'Unknown'
+    }));
   },
 
-  /**
-   * Example: admin login – if you use a backend endpoint for auth.
-   * If you’re using only Supabase Auth, this would be replaced with supabase.auth calls.
-   */
-  async login(username: string, password: string): Promise<User> {
-    const res = await fetch(`${API_BASE_URL}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+  // --- Upload Flow ---
+
+  async getUploadToken(filename: string, contentType: string) {
+    // Step 1: Get Signed URL from Edge Function
+    const session = (await supabase.auth.getSession()).data.session;
+    const response = await fetch(`${FUNCTION_BASE_URL}/delegate-upload-token?filename=${filename}&contentType=${contentType}`, {
+        headers: {
+             'Authorization': `Bearer ${session?.access_token}`
+        }
     });
-    await ensureOk(res, "Failed to login");
-    return res.json();
+    if (!response.ok) throw new Error('Failed to get upload token');
+    return response.json(); // Expected: { uploadUrl: '...' }
   },
+
+  async completeFulfillment(data: { awb: string; videoUrl: string; duration?: number }) {
+    // Step 3: Webhook to trigger processing
+    const session = (await supabase.auth.getSession()).data.session;
+    const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify(data)
+    });
+
+    if (!response.ok) {
+        throw new Error('Fulfillment failed');
+    }
+
+    // FIX: Safety check for empty response body
+    const text = await response.text();
+    return text ? JSON.parse(text) : { success: true };
+  },
+
+  // --- Credits ---
+
+  async getCreditRequests(role: UserRole, userId?: string): Promise<CreditRequest[]> {
+    let query = supabase.from('credit_requests').select('*, profiles:admin_id(name)').order('created_at', { ascending: false });
+    
+    if (role === UserRole.ADMIN && userId) {
+      query = query.eq('admin_id', userId);
+    } else if (role === UserRole.SUPER_ADMIN) {
+        query = query.eq('status', 'pending');
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return data.map((req: any) => ({
+        ...req,
+        admin_name: req.profiles?.name
+    }));
+  },
+
+  async requestCredits(adminId: string, amount: number) {
+    const { error } = await supabase.from('credit_requests').insert({
+        admin_id: adminId,
+        amount: amount,
+        status: 'pending'
+    });
+    if (error) throw error;
+  },
+
+  async processCreditRequest(requestId: string, status: 'approved' | 'rejected') {
+    // Complex logic (transaction) should be in Edge Function, but simple update here
+    const { error } = await supabase.from('credit_requests').update({ status }).eq('id', requestId);
+    if (error) throw error;
+    
+    // If approved, trigger function to add credits (or trigger via database webhook)
+    if (status === 'approved') {
+        // Call edge function to safely increment credits
+        // fetch(`${FUNCTION_BASE_URL}/add-credits`, ...)
+    }
+  },
+  
+  // --- Admin Data ---
+  async getPackers(adminId: string) {
+      const { data, error } = await supabase.from('profiles').select('*').eq('role', 'packer').eq('organization_id', adminId);
+      if (error) throw error;
+      return data;
+  },
+
+  async getAllAdmins() {
+      const { data, error } = await supabase.from('profiles').select('*').eq('role', 'admin');
+      if (error) throw error;
+      return data;
+  }
 };
