@@ -375,18 +375,43 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [whatsappConfig, setWhatsappConfig] = useState(user.integrations?.whatsappConfig || {});
 
     // Google State
-    const [googleConnected, setGoogleConnected] = useState(user.integrations?.googleConnected || false);
     const [driveFolders, setDriveFolders] = useState<{id: string, name: string}[]>([]);
     const [selectedFolder, setSelectedFolder] = useState(user.integrations?.googleFolderId || '');
 
+    // Fetch Real Folders on Mount (if connected)
+    useEffect(() => {
+        if (user.integrations?.googleConnected) {
+            api.getDriveFolders().then(setDriveFolders).catch(console.error);
+        }
+    }, [user.integrations?.googleConnected]);
+
     const handleSave = async () => {
+        // If "Create New Folder" is selected, create it first
+        let finalFolderId = selectedFolder;
+        if (selectedFolder === 'create_new') {
+            const folderName = prompt("Enter new folder name:", "VideoVerify Proofs");
+            if (folderName) {
+                try {
+                    const newFolder = await api.createDriveFolder(folderName);
+                    setDriveFolders([...driveFolders, newFolder]);
+                    finalFolderId = newFolder.id;
+                    setSelectedFolder(newFolder.id);
+                } catch (e) {
+                    alert("Failed to create folder");
+                    return;
+                }
+            } else {
+                return; // Cancel save
+            }
+        }
+
         const config = {
             ecommercePlatform: platform,
             platformConfig,
             whatsappProvider: whatsapp,
             whatsappConfig,
-            googleConnected,
-            googleFolderId: selectedFolder,
+            googleConnected: user.integrations?.googleConnected || false,
+            googleFolderId: finalFolderId,
             googleSheetId: user.integrations?.googleSheetId // Preserve existing sheet
         };
         try {
@@ -421,11 +446,8 @@ You can watch your packing video here: {{3}}`;
     };
 
     const handleGoogleConnect = () => {
-        // Trigger the Google OAuth flow via Edge Function/Backend redirect
-        alert("Redirecting to Google Login...");
-        // In production: window.location.href = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-auth?action=connect`
-        setGoogleConnected(true); // Simulating success for UI
-        setDriveFolders([{id: 'f1', name: 'Packer Videos 2024'}, {id: 'f2', name: 'Old Videos'}]);
+        // Redirect to REAL Google Auth Flow
+        api.initiateGoogleAuth(user.id);
     };
 
     return (
@@ -616,7 +638,7 @@ You can watch your packing video here: {{3}}`}
                     <div className="flex-1 space-y-4">
                         <p className="text-sm text-slate-600">Connect your Google account to store video proofs in Drive and log activities in Sheets.</p>
                         
-                        {!googleConnected ? (
+                        {!user.integrations?.googleConnected ? (
                             <button onClick={handleGoogleConnect} className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-4 rounded-lg transition-colors">
                                 <img src="https://www.google.com/favicon.ico" alt="G" className="w-4 h-4" />
                                 Connect Google Account
@@ -643,6 +665,9 @@ You can watch your packing video here: {{3}}`}
                                             ))}
                                         </select>
                                     </div>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        {driveFolders.length === 0 ? "Loading folders..." : "Select the folder to store videos."}
+                                    </p>
                                 </div>
 
                                 {/* Sheet Link */}
