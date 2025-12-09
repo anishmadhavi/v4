@@ -1,0 +1,7 @@
+{
+  "name": "Powerpack v4",
+  "description": "A video fulfilment app providing customer video proof of parcel packing with automated WhatsApp notifications.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
