@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, VideoLog, UserRole } from '../types';
 import { api } from '../services/api';
-import { Scan, StopCircle, LogOut, Video as VideoIcon, UploadCloud, Keyboard, Search } from 'lucide-react';
+import { Scan, StopCircle, LogOut, Video as VideoIcon, UploadCloud, Keyboard, Search, X } from 'lucide-react';
 
 interface PackerInterfaceProps {
   packer: UserProfile;
@@ -12,11 +12,12 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [recording, setRecording] = useState(false);
   const [awb, setAwb] = useState('');
-  const [manualAwb, setManualAwb] = useState(''); // New state for manual input
+  const [manualAwb, setManualAwb] = useState(''); 
   const [uploading, setUploading] = useState(false);
   const [logs, setLogs] = useState<VideoLog[]>([]);
   const [scanBuffer, setScanBuffer] = useState(''); 
-  const [isScanning, setIsScanning] = useState(false); // Visual state for mobile holding
+  const [isScanning, setIsScanning] = useState(false); 
+  const [showMobileInput, setShowMobileInput] = useState(false); // New: Mobile Manual Input
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -30,9 +31,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     handleResize();
     window.addEventListener('resize', handleResize);
     
-    // Global Scanner Listener (USB Scanners)
     const handleKeyDown = (e: KeyboardEvent) => {
-        // Ignore if user is typing in the manual input box
         if (e.target instanceof HTMLInputElement) return;
 
         if (device === 'desktop') {
@@ -42,7 +41,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                     setScanBuffer('');
                 }
             } else {
-                // Filter out non-character keys if necessary
                 if (e.key.length === 1) {
                     setScanBuffer(prev => prev + e.key);
                 }
@@ -102,7 +100,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         mediaRecorder.start();
         setRecording(true);
     } else {
-        setRecording(true); // Mock
+        setRecording(true);
     }
   };
 
@@ -118,15 +116,14 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
     if (!recording) {
         setAwb(scannedCode);
-        setManualAwb(''); // Clear manual input
+        setManualAwb('');
+        setShowMobileInput(false); // Close mobile input if open
         startRecording();
     } else {
-        // Stop logic: If scanned code matches current AWB, stop.
         if (scannedCode === awb) {
             stopRecording();
         } else {
-            // Optional: Allow stopping with ANY scan if needed, or warn user
-            if(confirm(`Stopping recording for ${awb}. (Scanned: ${scannedCode})`)) {
+            if(confirm(`Stopping recording for ${awb}? (Scanned: ${scannedCode})`)) {
                  stopRecording();
             }
         }
@@ -152,7 +149,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         
         alert('Video uploaded successfully!');
         
-        // Update local logs
         const newLog: VideoLog = {
             id: 'temp-' + Date.now(),
             awb: awb,
@@ -174,18 +170,23 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- Mobile Touch Logic ---
-  const handleTouchStart = () => {
-      if (recording) return; // If recording, separate stop button handles it
+  // --- Mobile Touch Logic (Fixed for iOS) ---
+  const handleTouchStart = (e: React.TouchEvent) => {
+      // Allow interaction with inputs/buttons, but block default on the video container
+      if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'INPUT') return;
+      
+      e.preventDefault(); // Prevents iOS text selection/magnifier
+      if (recording) return;
+
       setIsScanning(true);
       
       // Start 1.5s timer
       scanTimerRef.current = setTimeout(() => {
           setIsScanning(false);
           // Simulate successful scan
-          const simulatedCode = `AWB-${Math.floor(Math.random()*100000)}`;
+          const simulatedCode = `ASEN-${Math.floor(Math.random()*100000)}`;
           handleScan(simulatedCode);
-          if (navigator.vibrate) navigator.vibrate(200); // Haptic feedback
+          if (navigator.vibrate) navigator.vibrate(200); 
       }, 1500);
   };
 
@@ -214,12 +215,11 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
       {/* Main Viewport */}
       <div 
-        className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none"
-        // Bind Mobile Touch Events to the whole container
-        onMouseDown={device === 'mobile' ? handleTouchStart : undefined}
-        onMouseUp={device === 'mobile' ? handleTouchEnd : undefined}
+        className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none" // touch-none is key for iOS
+        // Bind Mobile Touch Events
         onTouchStart={device === 'mobile' ? handleTouchStart : undefined}
         onTouchEnd={device === 'mobile' ? handleTouchEnd : undefined}
+        onTouchCancel={device === 'mobile' ? handleTouchEnd : undefined} // Handle drag off screen
       >
         <video 
             ref={videoRef} 
@@ -229,7 +229,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             className={`absolute inset-0 w-full h-full object-cover transition-transform duration-200 ${isScanning ? 'scale-105' : 'scale-100'}`}
         />
         
-        {/* Mobile Scanning Visuals (Laser Line) */}
+        {/* Mobile Scanning Visuals */}
         {isScanning && (
             <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/30 pointer-events-none">
                  <div className="w-full h-0.5 bg-red-500 shadow-[0_0_15px_rgba(239,68,68,1)] animate-pulse"></div>
@@ -249,11 +249,45 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                 </span>
             </div>
 
-            {/* Mobile Hint */}
-            {device === 'mobile' && !recording && !isScanning && (
-                <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm mb-20 animate-bounce">
-                    Hold camera steady on barcode to scan
+            {/* Mobile UI Layers */}
+            {device === 'mobile' && !recording && !isScanning && !showMobileInput && (
+                <div className="flex flex-col items-center gap-4 mb-20 pointer-events-auto">
+                     <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
+                        Hold screen to scan
+                    </div>
+                    {/* New Mobile Manual Input Toggle */}
+                    <button 
+                        onClick={() => setShowMobileInput(true)}
+                        className="bg-slate-800/80 p-3 rounded-full text-slate-300 hover:text-white hover:bg-slate-700 backdrop-blur-md"
+                    >
+                        <Keyboard size={24} />
+                    </button>
                 </div>
+            )}
+
+            {/* Mobile Manual Input Modal */}
+            {device === 'mobile' && showMobileInput && !recording && (
+                 <div className="pointer-events-auto bg-black/80 p-4 rounded-xl w-full max-w-xs mb-20 backdrop-blur-md border border-slate-700">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-bold text-slate-300">Enter AWB Manually</span>
+                        <button onClick={() => setShowMobileInput(false)}><X size={16} className="text-slate-400" /></button>
+                    </div>
+                    <input 
+                        type="text"
+                        autoFocus
+                        value={manualAwb}
+                        onChange={(e) => setManualAwb(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white mb-3"
+                        placeholder="ASEN..."
+                    />
+                    <button 
+                        onClick={() => handleScan(manualAwb)}
+                        disabled={!manualAwb}
+                        className="w-full bg-blue-600 py-2 rounded font-bold text-sm disabled:opacity-50"
+                    >
+                        Start Recording
+                    </button>
+                 </div>
             )}
 
             {/* Mobile Stop Button */}
@@ -269,7 +303,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                 </div>
             )}
 
-            {/* Desktop Manual Input */}
+            {/* Desktop UI */}
             {device === 'desktop' && (
                 <div className="mb-10 w-full max-w-md pointer-events-auto flex flex-col gap-4">
                      {/* Manual Input Box */}
@@ -284,23 +318,35 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                                     if(e.key === 'Enter' && manualAwb) handleScan(manualAwb);
                                 }}
                                 disabled={recording}
-                                placeholder={recording ? "Recording in progress..." : "Scan or Type Barcode"}
+                                placeholder={recording ? "Recording..." : "Scan or Type Barcode"}
                                 className="w-full bg-slate-900 border border-slate-700 text-white pl-10 pr-4 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none placeholder:text-slate-500"
                             />
                         </div>
-                        <button 
-                            onClick={() => manualAwb && handleScan(manualAwb)}
-                            disabled={recording || !manualAwb}
-                            className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 disabled:text-slate-500 text-white px-4 rounded-lg font-medium transition-colors"
-                        >
-                            {recording ? 'Active' : 'Start'}
-                        </button>
+                        
+                        {!recording ? (
+                            <button 
+                                onClick={() => manualAwb && handleScan(manualAwb)}
+                                disabled={!manualAwb}
+                                className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 disabled:text-slate-500 text-white px-4 rounded-lg font-medium transition-colors"
+                            >
+                                Start
+                            </button>
+                        ) : (
+                            // NEW: Desktop Stop Button
+                            <button 
+                                onClick={stopRecording}
+                                className="bg-red-600 hover:bg-red-700 text-white px-4 rounded-lg font-medium transition-colors flex items-center gap-2"
+                            >
+                                <StopCircle size={18} /> Stop
+                            </button>
+                        )}
                      </div>
 
-                    {/* Hint */}
-                    <div className="bg-black/50 px-4 py-2 rounded-lg text-center text-sm text-slate-400 backdrop-blur-sm">
-                        Use USB Scanner OR type manually above
-                    </div>
+                    {!recording && (
+                        <div className="bg-black/50 px-4 py-2 rounded-lg text-center text-sm text-slate-400 backdrop-blur-sm">
+                            Use USB Scanner OR type manually above
+                        </div>
+                    )}
                 </div>
             )}
         </div>
