@@ -36,12 +36,7 @@ export const api = {
 
     if (!response.ok) {
         const errorText = await response.text();
-        try {
-            const jsonErr = JSON.parse(errorText);
-            throw new Error(jsonErr.error || jsonErr.message || 'Failed to create packer');
-        } catch (e) {
-             throw new Error(errorText || 'Failed to create packer');
-        }
+        throw new Error(errorText || 'Failed to create packer');
     }
 
     const text = await response.text();
@@ -176,15 +171,21 @@ export const api = {
 
   async getUploadToken(filename: string, contentType: string) {
     const session = (await supabase.auth.getSession()).data.session;
+    if (!session?.access_token) throw new Error("No active session");
+
     const response = await fetch(`${FUNCTION_BASE_URL}/delegate-upload-token?filename=${filename}&contentType=${contentType}`, {
         headers: {
-             'Authorization': `Bearer ${session?.access_token}`
+             'Authorization': `Bearer ${session.access_token}`
         }
     });
-    if (!response.ok) throw new Error('Failed to get upload token');
+
+    if (!response.ok) {
+        // FIX: Read and throw the actual error message from the backend
+        const errText = await response.text();
+        throw new Error(`Token Error: ${errText}`);
+    }
     
-    // FIX: Expect folderId in response
-    return response.json() as Promise<{ uploadUrl: string; folderId?: string }>; 
+    return response.json() as Promise<{ uploadUrl: string; folderId?: string; folderName?: string }>; 
   },
 
   // --- FULFILLMENT ---
@@ -196,15 +197,12 @@ export const api = {
         throw new Error("User is not authenticated. Cannot complete fulfillment.");
     }
 
-    console.log("Sending fulfillment data:", data);
-
     const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
         },
-        // FIX: Ensure folder_id matches what backend expects
         body: JSON.stringify({
             awb: data.awb,
             videoUrl: data.videoUrl,
