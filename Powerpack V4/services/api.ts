@@ -1,191 +1,271 @@
-// services/api.ts
-// FULL UPDATED FILE — includes new uploadVideoToDrive()
-// ------------------------------------------------------
+import { supabase } from '../lib/supabase';
+import { UserProfile, VideoLog, CreditRequest, UserRole } from '../types';
 
-import { supabase } from "../lib/supabase";
-import { UserRole, VideoLog, UserProfile } from "../types";
-
-// Resolve Functions URL
-const FUNCTIONS_URL =
-  import.meta.env.PUBLIC_SUPABASE_FUNCTIONS_URL ||
-  `${import.meta.env.PUBLIC_SUPABASE_URL}/functions/v1`;
-
-async function getAuthToken() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  const token = data.session?.access_token;
-  if (!token) throw new Error("Not authenticated");
-  return token;
-}
+// Supabase Edge Function URL prefix
+const FUNCTION_BASE_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1';
 
 export const api = {
-  // ------------------------------------------------------
-  // AUTH HELPERS
-  // ------------------------------------------------------
-
-  async getCurrentUser(): Promise<UserProfile | null> {
-    const { data } = await supabase.auth.getUser();
-    return (data?.user ?? null) as unknown as UserProfile | null;
+  // --- Auth & Profiles ---
+  
+  async getProfile(userId: string): Promise<UserProfile | null> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+    
+    if (error) {
+      console.error('Error fetching profile:', error);
+      return null;
+    }
+    return data as UserProfile;
   },
 
-  async loginAdmin(email: string, password: string) {
-    return supabase.auth.signInWithPassword({ email, password });
-  },
+  async createPacker(adminId: string, packerData: { name: string; mobile: string; pin: string }) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
 
-  async loginPacker(phone: string, pin: string) {
-    const { data, error } = await supabase.rpc("login_packer", {
-      phone_input: phone,
-      pin_input: pin,
-    });
-    if (error) throw error;
-
-    // Use OTP token returned by RPC
-    const token = data?.token;
-    if (!token) throw new Error("Invalid token");
-
-    await supabase.auth.setSession({
-      access_token: token,
-      refresh_token: token,
-    });
-
-    return data.profile;
-  },
-
-  async logout() {
-    await supabase.auth.signOut();
-  },
-
-  // ------------------------------------------------------
-  // GOOGLE DRIVE SERVER UPLOAD  (NEW LOGIC)
-  // ------------------------------------------------------
-
-  /**
-   * Uploads the recorded video to your Supabase function,
-   * which uploads it to Google Drive (server → Google).
-   */
-  async uploadVideoToDrive(filename: string, file: Blob) {
-    const token = await getAuthToken();
-
-    const url = `${FUNCTIONS_URL}/delegate-upload-token?filename=${encodeURIComponent(
-      filename,
-    )}&contentType=video/webm`;
-
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: file,
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-create-user`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ ...packerData, role: 'packer', admin_id: adminId })
     });
 
-    const json = await res.json();
-
-    if (!res.ok) {
-      throw new Error(json.error || "Google Drive upload failed");
+    if (!response.ok) {
+        const errorText = await response.text();
+        try {
+            const jsonErr = JSON.parse(errorText);
+            throw new Error(jsonErr.error || jsonErr.message || 'Failed to create packer');
+        } catch (e) {
+             throw new Error(errorText || 'Failed to create packer');
+        }
     }
 
-    return json as { success: boolean; fileId: string; fileUrl: string };
+    const text = await response.text();
+    return text ? JSON.parse(text) : { success: true };
   },
 
-  // ------------------------------------------------------
-  // LOGS + HISTORY
-  // ------------------------------------------------------
+  async deletePacker(packerId: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
 
-  async getLogs(userId: string, role: UserRole): Promise<VideoLog[]> {
-    let query = supabase.from("video_logs").select("*").order("created_at", {
-      ascending: false,
+    // Use Edge Function to delete from Auth and Profiles
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-user-actions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'delete', user_id: packerId })
     });
 
-    if (role === "packer") {
-      query = query.eq("packer_id", userId);
-    } else if (role === "admin") {
-      query = query.eq("admin_id", userId);
+    if (!response.ok) {
+        const err = await response.text(); 
+        throw new Error('Failed to delete packer: ' + err);
+    }
+    return true;
+  },
+
+  async updatePackerPin(packerId: string, newPin: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/admin-user-actions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'update_pin', user_id: packerId, new_pin: newPin })
+    });
+
+    if (!response.ok) {
+        const err = await response.text();
+        throw new Error('Failed to update PIN: ' + err);
+    }
+    return true;
+  },
+
+  // --- Integrations & Google ---
+
+  async updateIntegrationConfig(userId: string, config: any) {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ integrations: config })
+      .eq('id', userId);
+    if (error) throw error;
+  },
+
+  async initiateGoogleAuth(adminId: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    // 1. Ask backend for the Google Auth URL
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'generate_auth_url', admin_id: adminId })
+    });
+
+    if (!response.ok) throw new Error("Failed to start Google Auth");
+    
+    const data = await response.json();
+    
+    // 2. Redirect the browser
+    window.location.href = data.url;
+  },
+
+  async getDriveFolders() {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return [];
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'list_folders' })
+    });
+
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.folders || [];
+  },
+
+  async createDriveFolder(folderName: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'create_folder', name: folderName })
+    });
+
+    if (!response.ok) throw new Error("Failed to create folder");
+    return await response.json(); // returns { id: '...', name: '...' }
+  },
+
+  // --- Logs & Videos ---
+
+  async getLogs(userId: string, role: UserRole): Promise<VideoLog[]> {
+    let query = supabase.from('logs').select('*, profiles:packer_id(name)').order('created_at', { ascending: false });
+    // Note: Table name in schema was 'logs', but sometimes referenced as 'video_logs'. 
+    // Using 'logs' based on your provided schema.txt
+    
+    if (role === UserRole.ADMIN) {
+      query = query.eq('admin_id', userId);
+    } else if (role === UserRole.PACKER) {
+      query = query.eq('packer_id', userId);
     }
 
     const { data, error } = await query;
     if (error) throw error;
-    return data ?? [];
+    
+    // Flatten packer name
+    return data.map((log: any) => ({
+      ...log,
+      packer_name: log.profiles?.name || 'Unknown'
+    }));
   },
 
-  // ------------------------------------------------------
-  // COMPLETION + DB UPDATES
-  // ------------------------------------------------------
+  // --- Upload Flow ---
 
-  async completeFulfillment(payload: { awb: string; videoUrl: string }) {
-    const token = await getAuthToken();
+  async getUploadToken(filename: string, contentType: string) {
+    const session = (await supabase.auth.getSession()).data.session;
+    const response = await fetch(`${FUNCTION_BASE_URL}/delegate-upload-token?filename=${filename}&contentType=${contentType}`, {
+        headers: {
+             'Authorization': `Bearer ${session?.access_token}`
+        }
+    });
+    if (!response.ok) throw new Error('Failed to get upload token');
+    return response.json(); 
+  },
 
-    const res = await fetch(`${FUNCTIONS_URL}/complete-fulfillment`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
+  async completeFulfillment(data: { awb: string; videoUrl: string; duration?: number }) {
+    const session = (await supabase.auth.getSession()).data.session;
+    const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify(data)
     });
 
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || "Failed to complete fulfillment");
+    if (!response.ok) {
+        throw new Error('Fulfillment failed');
+    }
 
-    return json;
+    const text = await response.text();
+    return text ? JSON.parse(text) : { success: true };
   },
 
-  // ------------------------------------------------------
-  // USER / PROFILE LOOKUPS
-  // ------------------------------------------------------
+  // --- Credits ---
 
-  async getProfile(): Promise<UserProfile | null> {
-    const { data } = await supabase.auth.getUser();
-    return (data?.user as UserProfile) ?? null;
+  async getCreditRequests(role: UserRole, userId?: string): Promise<CreditRequest[]> {
+    // Note: Assuming 'credit_requests' table exists, if not, you might need to create it 
+    // or mock it until the billing logic is fully in DB.
+    // For now keeping this as requested.
+    let query = supabase.from('credit_requests').select('*, profiles:admin_id(name)').order('created_at', { ascending: false });
+    
+    if (role === UserRole.ADMIN && userId) {
+      query = query.eq('admin_id', userId);
+    } else if (role === UserRole.SUPER_ADMIN) {
+        query = query.eq('status', 'pending');
+    }
+
+    const { data, error } = await query;
+    if (error) {
+       // If table doesn't exist yet, return empty array to prevent app crash
+       console.warn("Credit requests fetch failed (table might be missing)", error);
+       return [];
+    }
+
+    return data.map((req: any) => ({
+        ...req,
+        admin_name: req.profiles?.name
+    }));
   },
 
-  async updateProfile(updates: any) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .update(updates)
-      .eq("id", updates.id);
-
+  async requestCredits(adminId: string, amount: number) {
+    const { error } = await supabase.from('credit_requests').insert({
+        admin_id: adminId,
+        amount: amount,
+        status: 'pending'
+    });
     if (error) throw error;
-    return data;
   },
 
-  // ------------------------------------------------------
-  // ADMIN SUPPORT – PACKER MANAGEMENT
-  // ------------------------------------------------------
-
+  async processCreditRequest(requestId: string, status: 'approved' | 'rejected') {
+    const { error } = await supabase.from('credit_requests').update({ status }).eq('id', requestId);
+    if (error) throw error;
+  },
+  
+  // --- Admin Data ---
   async getPackers(adminId: string) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("organization_id", adminId)
-      .eq("role", "packer");
-
-    if (error) throw error;
-    return data;
+      const { data, error } = await supabase.from('profiles')
+        .select('*')
+        .eq('role', 'packer')
+        .eq('organization_id', adminId);
+      
+      if (error) throw error;
+      return data;
   },
 
-  async createPacker(name: string, phone: string, pin: string, adminId: string) {
-    const { data, error } = await supabase.rpc("create_packer", {
-      name_input: name,
-      phone_input: phone,
-      pin_input: pin,
-      admin_input: adminId,
-    });
-
-    if (error) throw error;
-    return data;
-  },
-
-  // ------------------------------------------------------
-  // BILLING / CREDIT USAGE (IF USED IN FUTURE)
-  // ------------------------------------------------------
-
-  async getBilling(adminId: string) {
-    const { data, error } = await supabase
-      .from("billing")
-      .select("*")
-      .eq("admin_id", adminId);
-
-    if (error) throw error;
-    return data;
-  },
+  async getAllAdmins() {
+      const { data, error } = await supabase.from('profiles').select('*').eq('role', 'admin');
+      if (error) throw error;
+      return data;
+  }
 };
