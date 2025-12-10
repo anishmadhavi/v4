@@ -23,7 +23,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const scanTimerRef = useRef<any>(null);
-  
   const awbRef = useRef('');
 
   useEffect(() => {
@@ -171,14 +170,12 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
         if (!res.ok) throw new Error("Upload to Drive failed");
 
-        // FIX: Extract the REAL File ID from Google's response
+        // 3. Extract File ID for Link
         const googleData = await res.json();
         const fileId = googleData.id;
-        
-        // Construct the viewable link
         const realVideoUrl = `https://drive.google.com/file/d/${fileId}/view`;
 
-        // 3. Backend Fulfillment (Send the REAL link now)
+        // 4. Backend Fulfillment
         await api.completeFulfillment({
             awb: currentAwb,
             videoUrl: realVideoUrl, 
