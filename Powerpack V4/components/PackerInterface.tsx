@@ -131,23 +131,40 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
+  // --- NEW: Helper to Download Video Locally ---
+  const downloadLocally = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
   const saveVideo = async (blob: Blob) => {
     setUploading(true);
+    
+    // 1. Generate Filename & Download Locally Immediately
+    const filename = `${awb}_${Date.now()}.webm`;
+    downloadLocally(blob, filename);
+
     try {
-        const filename = `${awb}_${Date.now()}.webm`;
-        // 1. Get the fixed URL from backend
+        // 2. Get the upload URL from backend
         const { uploadUrl } = await api.getUploadToken(filename, 'video/webm');
         
-        // 2. Upload directly to Google (CORS fixed)
+        // 3. Upload directly to Google (CORS FIX: No custom headers here)
         const res = await fetch(uploadUrl, {
             method: 'PUT',
             body: blob,
-            headers: { 'Content-Type': 'video/webm' }
+            // Headers removed intentionally to prevent preflight check failure
         });
 
         if (!res.ok) throw new Error("Upload to Drive failed");
 
-        // 3. Notify Backend
+        // 4. Notify Backend of Success
         await api.completeFulfillment({
             awb: awb,
             videoUrl: uploadUrl.split('?')[0] 
@@ -169,7 +186,8 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
     } catch (err: any) {
         console.error(err);
-        alert('Upload failed: ' + err.message);
+        // We alert user, but since video is downloaded locally, data is safe.
+        alert('Cloud Upload Failed (Video saved to device): ' + err.message);
     } finally {
         setAwb('');
         setUploading(false);
