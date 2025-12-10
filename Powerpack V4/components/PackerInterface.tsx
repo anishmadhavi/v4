@@ -1,114 +1,424 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import React, { useState, useEffect, useRef } from 'react';
+import { UserProfile, VideoLog, UserRole } from '../types';
+import { api } from '../services/api';
+import { Scan, StopCircle, LogOut, Video as VideoIcon, UploadCloud, Keyboard, Search, X } from 'lucide-react';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+interface PackerInterfaceProps {
+  packer: UserProfile;
+  onLogout: () => void;
 }
 
-serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) => {
+  const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
+  const [recording, setRecording] = useState(false);
+  const [awb, setAwb] = useState('');
+  const [manualAwb, setManualAwb] = useState(''); 
+  const [uploading, setUploading] = useState(false);
+  const [logs, setLogs] = useState<VideoLog[]>([]);
+  const [scanBuffer, setScanBuffer] = useState(''); 
+  const [isScanning, setIsScanning] = useState(false); 
+  const [showMobileInput, setShowMobileInput] = useState(false);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const scanTimerRef = useRef<any>(null);
+  
+  // FIX: Use Ref to hold AWB instantly (State is too slow)
+  const awbRef = useRef('');
 
-  try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
-
-    // 1. Authenticate
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) throw new Error('Missing Authorization header')
-    const { data: { user }, error: userError } = await supabase.auth.getUser(authHeader.replace('Bearer ', ''))
-    if (userError || !user) throw new Error('Invalid user token')
-
-    const url = new URL(req.url)
-    const filename = url.searchParams.get('filename') || `video_${Date.now()}.webm`
-    const contentType = url.searchParams.get('contentType') || 'video/webm'
+  useEffect(() => {
+    const handleResize = () => {
+      setDevice(window.innerWidth < 768 ? 'mobile' : 'desktop');
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
     
-    // 2. Identify Admin ID (if Packer)
-    let admin_id = user.id
-    const { data: profile } = await supabase.from('profiles').select('role, organization_id').eq('id', user.id).single()
-    if (profile?.role === 'packer' && profile?.organization_id) {
-        admin_id = profile.organization_id
-    }
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.target instanceof HTMLInputElement) return;
 
-    // 3. Get Google Tokens & Config
-    const { data: integration } = await supabase.from('integrations')
-        .select('config_json')
-        .eq('admin_id', admin_id)
-        .eq('provider_type', 'google')
-        .single()
-        
-    if (!integration) throw new Error('Google Drive not connected')
-    const config = integration.config_json
+        if (device === 'desktop') {
+            if (e.key === 'Enter') {
+                if (scanBuffer.length > 3) {
+                    handleScan(scanBuffer);
+                    setScanBuffer('');
+                }
+            } else {
+                if (e.key.length === 1) {
+                    setScanBuffer(prev => prev + e.key);
+                }
+            }
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+        window.removeEventListener('resize', handleResize);
+        window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [scanBuffer, device]);
+
+  useEffect(() => {
+    const startCamera = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+              video: { facingMode: 'environment' }, 
+              audio: false 
+            });
+            if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+            }
+        } catch (err) {
+            console.error("Camera error:", err);
+        }
+    };
+    startCamera();
     
-    // FIX: Clean up folder ID
-    let targetFolderId = config.googleFolderId;
-    if (targetFolderId && typeof targetFolderId === 'string') {
-        targetFolderId = targetFolderId.trim();
+    api.getLogs(packer.id, UserRole.PACKER).then(data => setLogs(data.slice(0,5))).catch(console.error);
+
+    return () => {
+        if (videoRef.current && videoRef.current.srcObject) {
+            const stream = videoRef.current.srcObject as MediaStream;
+            stream.getTracks().forEach(track => track.stop());
+        }
+    };
+  }, [packer.id]);
+
+  const startRecording = () => {
+    if (videoRef.current && videoRef.current.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        chunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+            saveVideo(blob);
+        };
+
+        mediaRecorder.start();
+        setRecording(true);
     } else {
-        targetFolderId = null;
+        setRecording(true);
     }
-    
-    // 4. Refresh Token if needed
-    let accessToken = config.access_token
-    if (config.expires_at && Date.now() > config.expires_at - 300000) {
-        console.log("Refreshing Token...")
-        const refreshRes = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                client_id: Deno.env.get('GOOGLE_CLIENT_ID') ?? '',
-                client_secret: Deno.env.get('GOOGLE_CLIENT_SECRET') ?? '',
-                refresh_token: config.refresh_token,
-                grant_type: 'refresh_token',
-            }),
-        })
-        const newTokens = await refreshRes.json()
-        if (!newTokens.access_token) throw new Error('Failed to refresh Google Token')
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+    }
+    setRecording(false);
+  };
+
+  const handleScan = (scannedCode: string) => {
+    if (!scannedCode) return;
+
+    if (!recording) {
+        // FIX: Update BOTH State and Ref
+        setAwb(scannedCode);
+        awbRef.current = scannedCode;
         
-        accessToken = newTokens.access_token
-        // Update DB
-        await supabase.from('integrations').update({
-            config_json: { ...config, access_token: accessToken, expires_at: Date.now() + (newTokens.expires_in * 1000) }
-        }).eq('admin_id', admin_id).eq('provider_type', 'google')
+        setManualAwb('');
+        setShowMobileInput(false);
+        startRecording();
+    } else {
+        // Use Ref for comparison to be safe
+        if (scannedCode === awbRef.current) {
+            stopRecording();
+        } else {
+            if(confirm(`Current AWB: ${awbRef.current}\nScanned: ${scannedCode}\n\nStop recording?`)) {
+                 stopRecording();
+            }
+        }
     }
+  };
 
-    // 5. Create Resumable Session
-    const metadata: any = {
-        name: filename,
-        mimeType: contentType
-    }
-    // Only add parents if valid
-    if (targetFolderId) {
-        metadata.parents = [targetFolderId];
-    }
+  const downloadLocally = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
 
-    const sessionRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            'X-Upload-Content-Type': contentType, 
-        },
-        body: JSON.stringify(metadata)
-    })
-
-    if (!sessionRes.ok) {
-        const err = await sessionRes.text()
-        throw new Error(`Google Session Error: ${err}`)
-    }
-
-    const uploadUrl = sessionRes.headers.get('Location')
+  const saveVideo = async (blob: Blob) => {
+    setUploading(true);
     
-    return new Response(JSON.stringify({ uploadUrl, folderId: targetFolderId }), { 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-    })
+    // FIX: Read from Ref to guarantee we have the value
+    const currentAwb = awbRef.current || `scan_${Date.now()}`;
+    const filename = `${currentAwb}.webm`;
+    
+    downloadLocally(blob, filename);
 
-  } catch (err: any) {
-    return new Response(JSON.stringify({ error: err.message }), { 
-        status: 400, 
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-    })
-  }
-})
+    try {
+        const { uploadUrl, folderId } = await api.getUploadToken(filename, 'video/webm');
+        
+        if (!uploadUrl) throw new Error("No upload URL received");
+        
+        // Debugging for User
+        if (!folderId) {
+            console.warn("⚠️ Warning: No Google Drive Folder ID returned. Video will be in Root.");
+        }
+
+        const res = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: blob,
+        });
+
+        if (!res.ok) throw new Error("Upload to Drive failed");
+
+        await api.completeFulfillment({
+            awb: currentAwb,
+            videoUrl: uploadUrl.split('?')[0],
+            folderId: folderId || '' 
+        });
+        
+        alert(`Video uploaded successfully! ${!folderId ? '(Saved to Drive Root - Check Admin Settings)' : ''}`);
+        
+        const newLog: VideoLog = {
+            id: 'temp-' + Date.now(),
+            awb: currentAwb,
+            packer_id: packer.id,
+            admin_id: packer.organization_id || '',
+            created_at: new Date().toISOString(),
+            video_url: '#',
+            status: 'completed',
+            whatsapp_status: 'pending'
+        };
+        setLogs([newLog, ...logs]);
+
+    } catch (err: any) {
+        console.error(err);
+        alert('Cloud Upload Failed (Video saved to device): ' + err.message);
+    } finally {
+        setAwb('');
+        awbRef.current = ''; // Clear Ref
+        setUploading(false);
+    }
+  };
+
+  // --- Mobile Touch Logic ---
+  const handleTouchStart = (e: React.TouchEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
+      
+      e.preventDefault();
+      if (recording) return;
+
+      setIsScanning(true);
+      
+      scanTimerRef.current = setTimeout(() => {
+          setIsScanning(false);
+          const simulatedCode = `ASEN-${Math.floor(Math.random()*100000)}`;
+          handleScan(simulatedCode);
+          if (navigator.vibrate) navigator.vibrate(200); 
+      }, 1500);
+  };
+
+  const handleTouchEnd = () => {
+      if (recording) return;
+      setIsScanning(false);
+      if (scanTimerRef.current) {
+          clearTimeout(scanTimerRef.current);
+          scanTimerRef.current = null;
+      }
+  };
+
+  return (
+    <div className="min-h-screen bg-black text-white flex flex-col">
+      {/* Header */}
+      <div className="bg-slate-900 p-4 flex justify-between items-center border-b border-slate-800 z-10">
+        <div>
+            <div className="font-bold flex items-center gap-2">
+                <VideoIcon className="text-blue-500" />
+                {device === 'mobile' ? 'Mobile Scanner' : 'Desktop Station'}
+            </div>
+            <div className="text-xs text-slate-400">Packer: {packer.name}</div>
+        </div>
+        <button onClick={onLogout} className="text-slate-400 hover:text-white"><LogOut /></button>
+      </div>
+
+      {/* Main Viewport */}
+      <div 
+        className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none"
+        onTouchStart={device === 'mobile' ? handleTouchStart : undefined}
+        onTouchEnd={device === 'mobile' ? handleTouchEnd : undefined}
+      >
+        <video 
+            ref={videoRef} 
+            autoPlay 
+            muted 
+            playsInline
+            className={`absolute inset-0 w-full h-full object-cover transition-transform duration-200 ${isScanning ? 'scale-105' : 'scale-100'}`}
+        />
+        
+        {isScanning && (
+            <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/30 pointer-events-none">
+                 <div className="w-full h-0.5 bg-red-500 shadow-[0_0_15px_rgba(239,68,68,1)] animate-pulse"></div>
+                 <div className="absolute text-white font-mono font-bold text-lg bg-black/50 px-3 py-1 rounded mt-8">
+                     DETECTING BARCODE...
+                 </div>
+            </div>
+        )}
+
+        {/* Overlay UI */}
+        <div className="absolute inset-0 flex flex-col items-center justify-between p-6 pointer-events-none">
+            {/* Top Status */}
+            <div className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full mt-4 flex items-center gap-3 pointer-events-auto">
+                <div className={`w-3 h-3 rounded-full ${recording ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
+                <span className="font-mono font-bold tracking-wider">
+                    {recording ? `REC: ${awb}` : (isScanning ? 'SCANNING...' : 'READY')}
+                </span>
+            </div>
+
+            {/* Mobile UI Layers */}
+            {device === 'mobile' && !recording && !isScanning && !showMobileInput && (
+                <div className="flex flex-col items-center gap-4 mb-20 pointer-events-auto">
+                     <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
+                        Hold screen to scan
+                    </div>
+                    <button 
+                        onClick={() => setShowMobileInput(true)}
+                        className="bg-slate-800/80 p-3 rounded-full text-slate-300 hover:text-white hover:bg-slate-700 backdrop-blur-md"
+                    >
+                        <Keyboard size={24} />
+                    </button>
+                </div>
+            )}
+
+            {/* Mobile Manual Input Modal */}
+            {device === 'mobile' && showMobileInput && !recording && (
+                 <div className="pointer-events-auto bg-black/80 p-4 rounded-xl w-full max-w-xs mb-20 backdrop-blur-md border border-slate-700">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-bold text-slate-300">Enter AWB Manually</span>
+                        <button onClick={() => setShowMobileInput(false)}><X size={16} className="text-slate-400" /></button>
+                    </div>
+                    <input 
+                        type="text"
+                        autoFocus
+                        value={manualAwb}
+                        onChange={(e) => setManualAwb(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white mb-3"
+                        placeholder="ASEN..."
+                    />
+                    <button 
+                        onClick={() => handleScan(manualAwb)}
+                        disabled={!manualAwb}
+                        className="w-full bg-blue-600 py-2 rounded font-bold text-sm disabled:opacity-50"
+                    >
+                        Start Recording
+                    </button>
+                 </div>
+            )}
+
+            {/* Mobile Stop Button */}
+            {device === 'mobile' && recording && (
+                <div className="pointer-events-auto mb-20">
+                     <button 
+                        onClick={(e) => { e.stopPropagation(); stopRecording(); }}
+                        className="bg-red-600 hover:bg-red-700 text-white p-6 rounded-full shadow-lg shadow-red-900/50 flex flex-col items-center gap-1 transition-transform active:scale-95"
+                    >
+                        <StopCircle size={32} />
+                        <span className="text-xs font-bold">STOP</span>
+                    </button>
+                </div>
+            )}
+
+            {/* Desktop UI */}
+            {device === 'desktop' && (
+                <div className="mb-10 w-full max-w-md pointer-events-auto flex flex-col gap-4">
+                     <div className="flex gap-2 bg-black/80 p-2 rounded-xl border border-slate-700">
+                        <div className="relative flex-1">
+                            <Keyboard className="absolute left-3 top-3 text-slate-400" size={20} />
+                            <input 
+                                type="text"
+                                value={manualAwb}
+                                onChange={(e) => setManualAwb(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if(e.key === 'Enter' && manualAwb) handleScan(manualAwb);
+                                }}
+                                disabled={recording}
+                                placeholder={recording ? "Recording in progress..." : "Scan or Type Barcode"}
+                                className="w-full bg-slate-900 border border-slate-700 text-white pl-10 pr-4 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none placeholder:text-slate-500"
+                            />
+                        </div>
+                        
+                        {!recording ? (
+                            <button 
+                                onClick={() => manualAwb && handleScan(manualAwb)}
+                                disabled={!manualAwb}
+                                className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 disabled:text-slate-500 text-white px-4 rounded-lg font-medium transition-colors"
+                            >
+                                Start
+                            </button>
+                        ) : (
+                            <button 
+                                onClick={stopRecording}
+                                className="bg-red-600 hover:bg-red-700 text-white px-4 rounded-lg font-medium transition-colors flex items-center gap-2"
+                            >
+                                <StopCircle size={18} /> Stop
+                            </button>
+                        )}
+                     </div>
+
+                    {!recording && (
+                        <div className="bg-black/50 px-4 py-2 rounded-lg text-center text-sm text-slate-400 backdrop-blur-sm">
+                            Use USB Scanner OR type manually above
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+
+        {uploading && (
+            <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-50">
+                <UploadCloud size={64} className="text-blue-500 animate-bounce mb-6" />
+                <h2 className="text-2xl font-bold">Uploading Proof...</h2>
+                <p className="text-slate-400 mt-2">Do not close this window</p>
+            </div>
+        )}
+      </div>
+
+      {/* Desktop History Log */}
+      {device === 'desktop' && (
+          <div className="h-48 bg-slate-900 border-t border-slate-800 overflow-y-auto p-4">
+              <h3 className="text-sm font-bold text-slate-400 mb-3 uppercase tracking-wider flex items-center gap-2">
+                  <Search size={14} /> Session History
+              </h3>
+              <table className="w-full text-sm text-left text-slate-300">
+                  <thead className="text-xs uppercase bg-slate-800 text-slate-400">
+                      <tr>
+                          <th className="px-4 py-2 rounded-tl-lg">AWB</th>
+                          <th className="px-4 py-2">Time</th>
+                          <th className="px-4 py-2 rounded-tr-lg">Status</th>
+                      </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                      {logs.map(log => (
+                          <tr key={log.id} className="hover:bg-slate-800/50">
+                              <td className="px-4 py-3 font-mono text-blue-400 font-medium">{log.awb}</td>
+                              <td className="px-4 py-3 text-slate-400">{new Date(log.created_at).toLocaleTimeString()}</td>
+                              <td className="px-4 py-3">
+                                  <span className="bg-green-500/10 text-green-400 px-2 py-1 rounded text-xs border border-green-500/20">
+                                    {log.status}
+                                  </span>
+                              </td>
+                          </tr>
+                      ))}
+                  </tbody>
+              </table>
+          </div>
+      )}
+    </div>
+  );
+};
+
+export default PackerInterface;
