@@ -192,19 +192,33 @@ export const api = {
     return response.json(); 
   },
 
+  // Inside src/services/api.ts
+
   async completeFulfillment(data: { awb: string; videoUrl: string; duration?: number }) {
-    const session = (await supabase.auth.getSession()).data.session;
+    // 1. Get Session securely
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    // 2. Safety Check: Don't call the server if we aren't logged in
+    if (!session?.access_token) {
+        throw new Error("User is not authenticated. Cannot complete fulfillment.");
+    }
+
+    console.log("Sending fulfillment data:", data); // Debug log
+
     const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session?.access_token}`
+            'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data) // Since you use fetch, send 'data' directly (no 'body' wrapper needed)
     });
 
     if (!response.ok) {
-        throw new Error('Fulfillment failed');
+        // Try to read the error message from the backend
+        const errorText = await response.text();
+        console.error("Backend Error:", errorText);
+        throw new Error(`Fulfillment failed: ${errorText}`);
     }
 
     const text = await response.text();
