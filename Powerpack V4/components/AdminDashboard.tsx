@@ -5,7 +5,7 @@ import { api } from '../services/api';
 import { 
   LayoutDashboard, Users, CreditCard, Settings, LogOut, 
   Plus, Video, Trash2, Key, ExternalLink, Copy, HelpCircle,
-  Folder, FileSpreadsheet, Check
+  Folder, FileSpreadsheet, Check, AlertCircle, Save, XCircle
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
@@ -367,7 +367,7 @@ const BillingTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     );
 };
 
-// --- SETTINGS TAB (UPDATED WITH GOOGLE OAUTH LISTENER) ---
+// --- SETTINGS TAB (UPDATED WITH SEPARATE SAVES & DISCONNECTS) ---
 const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [platform, setPlatform] = useState(user.integrations?.ecommercePlatform || 'None');
     const [platformConfig, setPlatformConfig] = useState(user.integrations?.platformConfig || {});
@@ -441,58 +441,107 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
         }
     }, [googleConnected]);
 
-    const handleSave = async () => {
+    // --- GENERIC SAVE HELPER ---
+    const saveToDB = async (customConfig: any, successMessage: string) => {
+        const fullConfig = {
+            ecommercePlatform: platform,
+            platformConfig,
+            whatsappProvider: whatsapp,
+            whatsappConfig,
+            googleConnected,
+            googleFolderId: selectedFolder,
+            googleSheetId: user.integrations?.googleSheetId,
+            ...customConfig // Overwrite with any custom updates
+        };
+
+        try {
+            await api.updateIntegrationConfig(user.id, fullConfig);
+            alert(successMessage);
+            return true;
+        } catch (e: any) {
+            alert('Failed to save settings: ' + e.message);
+            return false;
+        }
+    };
+
+    // --- WEBSITE HANDLERS ---
+    const handleSaveWebsite = () => {
+        saveToDB({}, "Website settings saved successfully!");
+    };
+
+    const handleDisconnectWebsite = async () => {
+        if (confirm("Are you sure you want to disconnect your website integration?")) {
+            setPlatform('None');
+            setPlatformConfig({});
+            await saveToDB({ ecommercePlatform: 'None', platformConfig: {} }, "Website disconnected.");
+        }
+    };
+
+    // --- WHATSAPP HANDLERS ---
+    const handleSaveWhatsapp = () => {
+        saveToDB({}, "WhatsApp settings saved successfully!");
+    };
+
+    const handleDisconnectWhatsapp = async () => {
+        if (confirm("Are you sure you want to disconnect WhatsApp?")) {
+            setWhatsapp('None');
+            setWhatsappConfig({});
+            await saveToDB({ whatsappProvider: 'None', whatsappConfig: {} }, "WhatsApp disconnected.");
+        }
+    };
+
+    // --- GOOGLE HANDLERS ---
+    const handleGoogleConnect = () => {
+        api.initiateGoogleAuth(user.id);
+    };
+
+    const handleDisconnectGoogle = async () => {
+        if (confirm("Are you sure you want to disconnect your Google Account? This will stop video uploads.")) {
+            setGoogleConnected(false);
+            setSelectedFolder('');
+            setDriveFolders([]);
+            
+            // Update DB to reflect disconnection
+            await saveToDB({ 
+                googleConnected: false, 
+                googleFolderId: '', 
+                googleSheetId: '' 
+            }, "Google Account disconnected.");
+        }
+    };
+
+    const handleSaveGoogle = async () => {
         let finalFolderId = selectedFolder;
-        // Start with the existing sheetId in case we don't create a new one
-        let finalSheetId = user.integrations?.googleSheetId; 
+        let finalSheetId = user.integrations?.googleSheetId;
 
         if (selectedFolder === 'create_new') {
             const folderName = prompt("Enter new folder name:", "VideoVerify Proofs");
             if (folderName) {
                 try {
-                    // This now returns { id, name, sheetId }
                     const newFolderData = await api.createDriveFolder(folderName);
                     
-                    // 1. Update the Dropdown list locally so the UI reflects the new folder
+                    // Update Local State
                     setDriveFolders([...driveFolders, { id: newFolderData.id, name: newFolderData.name }]);
-                    
-                    // 2. Select the new folder ID
                     finalFolderId = newFolderData.id;
                     setSelectedFolder(newFolderData.id);
 
-                    // 3. Capture the new Sheet ID if it was created
                     if (newFolderData.sheetId) {
                         finalSheetId = newFolderData.sheetId;
                     }
-
                 } catch (e) {
                     alert("Failed to create folder. Please try again.");
                     console.error(e);
                     return;
                 }
             } else {
-                return; // User cancelled the prompt
+                return; // User cancelled
             }
         }
 
-        const config = {
-            ecommercePlatform: platform,
-            platformConfig,
-            whatsappProvider: whatsapp,
-            whatsappConfig,
-            googleConnected,
+        saveToDB({ 
             googleFolderId: finalFolderId,
-            googleSheetId: finalSheetId // Use the updated variable
-        };
-
-        try {
-            await api.updateIntegrationConfig(user.id, config);
-            alert('Settings saved successfully!');
-            // Optional: Reload page to reflect new "Open Sheet" link if needed, 
-            // or just rely on state if parent re-renders (User object update might be needed)
-        } catch (e: any) {
-            alert('Failed to save settings: ' + e.message);
-        }
+            googleSheetId: finalSheetId
+        }, "Google settings saved successfully!");
     };
 
     const copyTemplate = () => {
@@ -518,10 +567,6 @@ You can watch your packing video here: {{3}}`;
         return links[provider] || '#';
     };
 
-    const handleGoogleConnect = () => {
-        api.initiateGoogleAuth(user.id);
-    };
-
     if (loading) return <div className="p-10 text-center text-blue-600 font-bold">Connecting to Google... Please wait...</div>;
 
     return (
@@ -529,9 +574,16 @@ You can watch your packing video here: {{3}}`;
             
             {/* 1. Website Integration */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                    <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><LayoutDashboard size={20} /></div>
-                    <h3 className="font-bold text-lg text-slate-800">Website Integration</h3>
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><LayoutDashboard size={20} /></div>
+                        <h3 className="font-bold text-lg text-slate-800">Website Integration</h3>
+                    </div>
+                    {platform !== 'None' && (
+                        <button onClick={handleDisconnectWebsite} className="text-sm text-red-500 hover:text-red-700 flex items-center gap-1">
+                            <XCircle size={14} /> Disconnect
+                        </button>
+                    )}
                 </div>
                 
                 <div className="space-y-4">
@@ -551,74 +603,87 @@ You can watch your packing video here: {{3}}`;
                     </div>
 
                     {platform !== 'None' && (
-                        <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200 animate-in fade-in slide-in-from-top-2">
-                            <div className="flex justify-between items-center text-xs text-blue-600">
-                                <span className="font-semibold uppercase tracking-wider">Credentials Required</span>
-                                <a href={getHelpLink(platform)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
-                                    <HelpCircle size={12} /> How to find keys?
-                                </a>
-                            </div>
+                        <>
+                            <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200 animate-in fade-in slide-in-from-top-2">
+                                <div className="flex justify-between items-center text-xs text-blue-600">
+                                    <span className="font-semibold uppercase tracking-wider">Credentials Required</span>
+                                    <a href={getHelpLink(platform)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
+                                        <HelpCircle size={12} /> How to find keys?
+                                    </a>
+                                </div>
 
-                            {platform === 'Shopify' && (
-                                <>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">Shop Domain (e.g., store.myshopify.com)</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" placeholder="my-store.myshopify.com"
-                                            value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">Admin API Access Token</label>
-                                        <input type="password" className="w-full border rounded-lg p-2" placeholder="shpat_..."
-                                            value={platformConfig.apiKey || ''} onChange={e => setPlatformConfig({...platformConfig, apiKey: e.target.value})} />
-                                    </div>
-                                </>
-                            )}
-                            {/* Additional fields for other platforms can be added here as needed */}
-                             {(platform === 'WooCommerce') && (
-                                <>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">Store URL</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" placeholder="https://mystore.com"
-                                            value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                {platform === 'Shopify' && (
+                                    <>
                                         <div>
-                                            <label className="block text-xs font-medium text-slate-500 mb-1">Consumer Key</label>
-                                            <input type="text" className="w-full border rounded-lg p-2" placeholder="ck_..."
-                                                value={platformConfig.key || ''} onChange={e => setPlatformConfig({...platformConfig, key: e.target.value})} />
+                                            <label className="block text-xs font-medium text-slate-500 mb-1">Shop Domain (e.g., store.myshopify.com)</label>
+                                            <input type="text" className="w-full border rounded-lg p-2" placeholder="my-store.myshopify.com"
+                                                value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
                                         </div>
                                         <div>
-                                            <label className="block text-xs font-medium text-slate-500 mb-1">Consumer Secret</label>
-                                            <input type="password" className="w-full border rounded-lg p-2" placeholder="cs_..."
-                                                value={platformConfig.secret || ''} onChange={e => setPlatformConfig({...platformConfig, secret: e.target.value})} />
+                                            <label className="block text-xs font-medium text-slate-500 mb-1">Admin API Access Token</label>
+                                            <input type="password" className="w-full border rounded-lg p-2" placeholder="shpat_..."
+                                                value={platformConfig.apiKey || ''} onChange={e => setPlatformConfig({...platformConfig, apiKey: e.target.value})} />
                                         </div>
-                                    </div>
-                                </>
-                            )}
-                             {(platform === 'BigCommerce' || platform === 'Other') && (
-                                <>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">API Endpoint / Base URL</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" 
-                                            value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">API Key / Token</label>
-                                        <input type="password" className="w-full border rounded-lg p-2" 
-                                            value={platformConfig.apiKey || ''} onChange={e => setPlatformConfig({...platformConfig, apiKey: e.target.value})} />
-                                    </div>
-                                </>
-                            )}
-                        </div>
+                                    </>
+                                )}
+                                 {(platform === 'WooCommerce') && (
+                                    <>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-500 mb-1">Store URL</label>
+                                            <input type="text" className="w-full border rounded-lg p-2" placeholder="https://mystore.com"
+                                                value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">Consumer Key</label>
+                                                <input type="text" className="w-full border rounded-lg p-2" placeholder="ck_..."
+                                                    value={platformConfig.key || ''} onChange={e => setPlatformConfig({...platformConfig, key: e.target.value})} />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-medium text-slate-500 mb-1">Consumer Secret</label>
+                                                <input type="password" className="w-full border rounded-lg p-2" placeholder="cs_..."
+                                                    value={platformConfig.secret || ''} onChange={e => setPlatformConfig({...platformConfig, secret: e.target.value})} />
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+                                 {(platform === 'BigCommerce' || platform === 'Other') && (
+                                    <>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-500 mb-1">API Endpoint / Base URL</label>
+                                            <input type="text" className="w-full border rounded-lg p-2" 
+                                                value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-500 mb-1">API Key / Token</label>
+                                            <input type="password" className="w-full border rounded-lg p-2" 
+                                                value={platformConfig.apiKey || ''} onChange={e => setPlatformConfig({...platformConfig, apiKey: e.target.value})} />
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                            <div className="flex justify-end pt-2">
+                                <button onClick={handleSaveWebsite} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-800 flex items-center gap-2">
+                                    <Save size={16} /> Save Website
+                                </button>
+                            </div>
+                        </>
                     )}
                 </div>
             </div>
 
             {/* 2. WhatsApp Integration */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                    <div className="bg-green-100 p-2 rounded-lg text-green-600"><Users size={20} /></div>
-                    <h3 className="font-bold text-lg text-slate-800">WhatsApp Integration</h3>
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-green-100 p-2 rounded-lg text-green-600"><Users size={20} /></div>
+                        <h3 className="font-bold text-lg text-slate-800">WhatsApp Integration</h3>
+                    </div>
+                    {whatsapp !== 'None' && (
+                        <button onClick={handleDisconnectWhatsapp} className="text-sm text-red-500 hover:text-red-700 flex items-center gap-1">
+                            <XCircle size={14} /> Disconnect
+                        </button>
+                    )}
                 </div>
 
                 <div className="space-y-4">
@@ -639,42 +704,43 @@ You can watch your packing video here: {{3}}`;
                     </div>
 
                     {whatsapp !== 'None' && (
-                        <div className="space-y-6">
-                            {/* API Inputs */}
-                            <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200">
-                                <div className="flex justify-between items-center text-xs text-green-600">
-                                    <span className="font-semibold uppercase tracking-wider">API Configuration</span>
-                                    <a href={getHelpLink(whatsapp)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
-                                        <HelpCircle size={12} /> Get API Key
-                                    </a>
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-500 mb-1">API Key / Auth Token</label>
-                                    <input type="password" className="w-full border rounded-lg p-2" placeholder="Paste your key here..."
-                                        value={whatsappConfig.apiKey || ''} onChange={e => setWhatsappConfig({...whatsappConfig, apiKey: e.target.value})} />
-                                </div>
-                                {whatsapp === 'Wati' && (
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">API Endpoint URL</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" placeholder="https://live-server-XXXX.wati.io"
-                                            value={whatsappConfig.url || ''} onChange={e => setWhatsappConfig({...whatsappConfig, url: e.target.value})} />
+                        <>
+                            <div className="space-y-6">
+                                {/* API Inputs */}
+                                <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200">
+                                    <div className="flex justify-between items-center text-xs text-green-600">
+                                        <span className="font-semibold uppercase tracking-wider">API Configuration</span>
+                                        <a href={getHelpLink(whatsapp)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
+                                            <HelpCircle size={12} /> Get API Key
+                                        </a>
                                     </div>
-                                )}
-                            </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1">API Key / Auth Token</label>
+                                        <input type="password" className="w-full border rounded-lg p-2" placeholder="Paste your key here..."
+                                            value={whatsappConfig.apiKey || ''} onChange={e => setWhatsappConfig({...whatsappConfig, apiKey: e.target.value})} />
+                                    </div>
+                                    {whatsapp === 'Wati' && (
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-500 mb-1">API Endpoint URL</label>
+                                            <input type="text" className="w-full border rounded-lg p-2" placeholder="https://live-server-XXXX.wati.io"
+                                                value={whatsappConfig.url || ''} onChange={e => setWhatsappConfig({...whatsappConfig, url: e.target.value})} />
+                                        </div>
+                                    )}
+                                </div>
 
-                            {/* Template Section */}
-                            <div className="border border-blue-100 bg-blue-50/50 p-5 rounded-xl">
-                                <h4 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
-                                    <span className="bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs">!</span>
-                                    Template Setup Required
-                                </h4>
-                                <p className="text-sm text-slate-600 mb-4">
-                                    You must create a <strong>Utility</strong> template in your {whatsapp} dashboard with exactly <strong>3 variables</strong>:
-                                    1. Customer Name, 2. Order ID, 3. Video Link.
-                                </p>
-                                
-                                <div className="bg-white border border-slate-200 p-3 rounded-lg font-mono text-xs text-slate-600 relative group">
-                                    <pre className="whitespace-pre-wrap">
+                                {/* Template Section */}
+                                <div className="border border-blue-100 bg-blue-50/50 p-5 rounded-xl">
+                                    <h4 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
+                                        <span className="bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs">!</span>
+                                        Template Setup Required
+                                    </h4>
+                                    <p className="text-sm text-slate-600 mb-4">
+                                        You must create a <strong>Utility</strong> template in your {whatsapp} dashboard with exactly <strong>3 variables</strong>:
+                                        1. Customer Name, 2. Order ID, 3. Video Link.
+                                    </p>
+                                    
+                                    <div className="bg-white border border-slate-200 p-3 rounded-lg font-mono text-xs text-slate-600 relative group">
+                                        <pre className="whitespace-pre-wrap">
 {`Hi {{1}},
 
 Your Order #{{2}} has been packed and is ready for dispatch! 📦
@@ -682,29 +748,42 @@ Your Order #{{2}} has been packed and is ready for dispatch! 📦
 To ensure quality, we have recorded a video proof of your package.
 
 You can watch your packing video here: {{3}}`}
-                                    </pre>
-                                    <button onClick={copyTemplate} className="absolute top-2 right-2 bg-slate-100 hover:bg-slate-200 p-2 rounded text-slate-600" title="Copy Template">
-                                        <Copy size={14} />
-                                    </button>
-                                </div>
+                                        </pre>
+                                        <button onClick={copyTemplate} className="absolute top-2 right-2 bg-slate-100 hover:bg-slate-200 p-2 rounded text-slate-600" title="Copy Template">
+                                            <Copy size={14} />
+                                        </button>
+                                    </div>
 
-                                <div className="mt-4">
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Your Template Name</label>
-                                    <input type="text" className="w-full border rounded-lg p-2 bg-white" placeholder="e.g., parcel_packed_video_v1"
-                                        value={whatsappConfig.templateName || ''} onChange={e => setWhatsappConfig({...whatsappConfig, templateName: e.target.value})} />
-                                    <p className="text-xs text-slate-500 mt-1">Enter the exact name of the approved template from your provider.</p>
+                                    <div className="mt-4">
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Your Template Name</label>
+                                        <input type="text" className="w-full border rounded-lg p-2 bg-white" placeholder="e.g., parcel_packed_video_v1"
+                                            value={whatsappConfig.templateName || ''} onChange={e => setWhatsappConfig({...whatsappConfig, templateName: e.target.value})} />
+                                        <p className="text-xs text-slate-500 mt-1">Enter the exact name of the approved template from your provider.</p>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
+                            <div className="flex justify-end pt-2">
+                                <button onClick={handleSaveWhatsapp} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 flex items-center gap-2">
+                                    <Save size={16} /> Save WhatsApp
+                                </button>
+                            </div>
+                        </>
                     )}
                 </div>
             </div>
 
             {/* 3. Google Integration */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                    <div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div>
-                    <h3 className="font-bold text-lg text-slate-800">Google Connect</h3>
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div>
+                        <h3 className="font-bold text-lg text-slate-800">Google Connect</h3>
+                    </div>
+                    {googleConnected && (
+                         <button onClick={handleDisconnectGoogle} className="text-sm text-red-500 hover:text-red-700 flex items-center gap-1">
+                            <XCircle size={14} /> Disconnect
+                        </button>
+                    )}
                 </div>
 
                 <div className="flex flex-col md:flex-row gap-6 items-start">
@@ -757,16 +836,16 @@ You can watch your packing video here: {{3}}`}
                                         )}
                                     </div>
                                 </div>
+
+                                <div className="flex justify-end pt-2">
+                                    <button onClick={handleSaveGoogle} className="bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-700 flex items-center gap-2">
+                                        <Save size={16} /> Save Google Settings
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>
                 </div>
-            </div>
-
-            <div className="flex justify-end pt-4">
-                <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all">
-                    Save Integration Settings
-                </button>
             </div>
         </div>
     );
