@@ -72,9 +72,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     };
     startCamera();
     
-    api.getLogs(packer.id, UserRole.PACKER)
-      .then(data => setLogs(data.slice(0,5)))
-      .catch(console.error);
+    api.getLogs(packer.id, UserRole.PACKER).then(data => setLogs(data.slice(0,5))).catch(console.error);
 
     return () => {
         if (videoRef.current && videoRef.current.srcObject) {
@@ -133,7 +131,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- Helper to Download Video Locally (backup) ---
+  // --- NEW: Helper to Download Video Locally ---
   const downloadLocally = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -146,46 +144,50 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     document.body.removeChild(a);
   };
 
-  // --- Save & Upload Video ---
   const saveVideo = async (blob: Blob) => {
     setUploading(true);
     
-    // 1. Generate Filename & Download Locally Immediately (safety backup)
+    // 1. Generate Filename & Download Locally Immediately
     const filename = `${awb}_${Date.now()}.webm`;
     downloadLocally(blob, filename);
 
     try {
-        // 2. Upload to backend, which then uploads to Google Drive
-        // NOTE: implement api.uploadVideoToDrive(filename: string, file: Blob)
-        const { fileUrl } = await api.uploadVideoToDrive(filename, blob);
+        // 2. Get the upload URL from backend
+        const { uploadUrl } = await api.getUploadToken(filename, 'video/webm');
+        
+        // 3. Upload directly to Google (CORS FIX: No custom headers here)
+        const res = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: blob,
+            // Headers removed intentionally to prevent preflight check failure
+        });
 
-        if (!fileUrl) {
-          throw new Error('Upload succeeded but no fileUrl returned from server');
-        }
+        if (!res.ok) throw new Error("Upload to Drive failed");
 
-        // 3. Notify backend that fulfillment is complete
+        // 4. Notify Backend of Success
         await api.completeFulfillment({
             awb: awb,
-            videoUrl: fileUrl,
+            videoUrl: uploadUrl.split('?')[0] 
         });
         
         alert('Video uploaded successfully!');
-
+        
         const newLog: VideoLog = {
             id: 'temp-' + Date.now(),
             awb: awb,
             packer_id: packer.id,
             admin_id: packer.organization_id || '',
             created_at: new Date().toISOString(),
-            video_url: fileUrl,
+            video_url: '#',
             status: 'completed',
-            whatsapp_status: 'pending',
+            whatsapp_status: 'pending'
         };
         setLogs([newLog, ...logs]);
 
     } catch (err: any) {
         console.error(err);
-        alert('Cloud Upload Failed (Video saved to device): ' + (err?.message || 'Unknown error'));
+        // We alert user, but since video is downloaded locally, data is safe.
+        alert('Cloud Upload Failed (Video saved to device): ' + err.message);
     } finally {
         setAwb('');
         setUploading(false);
@@ -391,4 +393,27 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                       <tr>
                           <th className="px-4 py-2 rounded-tl-lg">AWB</th>
                           <th className="px-4 py-2">Time</th>
-                          <th classNam
+                          <th className="px-4 py-2 rounded-tr-lg">Status</th>
+                      </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                      {logs.map(log => (
+                          <tr key={log.id} className="hover:bg-slate-800/50">
+                              <td className="px-4 py-3 font-mono text-blue-400 font-medium">{log.awb}</td>
+                              <td className="px-4 py-3 text-slate-400">{new Date(log.created_at).toLocaleTimeString()}</td>
+                              <td className="px-4 py-3">
+                                  <span className="bg-green-500/10 text-green-400 px-2 py-1 rounded text-xs border border-green-500/20">
+                                    {log.status}
+                                  </span>
+                              </td>
+                          </tr>
+                      ))}
+                  </tbody>
+              </table>
+          </div>
+      )}
+    </div>
+  );
+};
+
+export default PackerInterface;
