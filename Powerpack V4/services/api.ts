@@ -209,7 +209,7 @@ export const api = {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
         },
-        // ✅ CRITICAL UPDATE: We now send 'folder_id' to the backend
+        // ✅ CRITICAL FIX: Pass 'folderId' from args to 'folder_id' in JSON
         body: JSON.stringify({
             awb: data.awb,
             videoUrl: data.videoUrl,
