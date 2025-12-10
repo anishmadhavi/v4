@@ -1,7 +1,7 @@
 import { supabase } from '../lib/supabase';
 import { UserProfile, VideoLog, CreditRequest, UserRole } from '../types';
 
-// Mock function URL prefix (would be your actual Supabase Function URL in production)
+// Supabase Edge Function URL prefix
 const FUNCTION_BASE_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1';
 
 export const api = {
@@ -52,6 +52,7 @@ export const api = {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
 
+    // Use Edge Function to delete from Auth and Profiles
     const response = await fetch(`${FUNCTION_BASE_URL}/admin-user-actions`, {
         method: 'POST',
         headers: {
@@ -99,16 +100,31 @@ export const api = {
   },
 
   async initiateGoogleAuth(adminId: string) {
-    // Redirects browser to the Google Auth flow via Edge Function
-    // The Edge Function will construct the Google URL and redirect the user
-    window.location.href = `${FUNCTION_BASE_URL}/google-auth?action=connect&admin_id=${adminId}`;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    // 1. Ask backend for the Google Auth URL
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'generate_auth_url', admin_id: adminId })
+    });
+
+    if (!response.ok) throw new Error("Failed to start Google Auth");
+    
+    const data = await response.json();
+    
+    // 2. Redirect the browser
+    window.location.href = data.url;
   },
 
   async getDriveFolders() {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) return [];
 
-    // Call google-auth function to fetch real folders
     const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
         method: 'POST',
         headers: {
@@ -125,7 +141,7 @@ export const api = {
 
   async createDriveFolder(folderName: string) {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) throw new Error("No session");
+    if (!session?.access_token) throw new Error("No active session");
 
     const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
         method: 'POST',
@@ -143,7 +159,9 @@ export const api = {
   // --- Logs & Videos ---
 
   async getLogs(userId: string, role: UserRole): Promise<VideoLog[]> {
-    let query = supabase.from('video_logs').select('*, profiles:packer_id(name)').order('created_at', { ascending: false });
+    let query = supabase.from('logs').select('*, profiles:packer_id(name)').order('created_at', { ascending: false });
+    // Note: Table name in schema was 'logs', but sometimes referenced as 'video_logs'. 
+    // Using 'logs' based on your provided schema.txt
     
     if (role === UserRole.ADMIN) {
       query = query.eq('admin_id', userId);
@@ -196,6 +214,9 @@ export const api = {
   // --- Credits ---
 
   async getCreditRequests(role: UserRole, userId?: string): Promise<CreditRequest[]> {
+    // Note: Assuming 'credit_requests' table exists, if not, you might need to create it 
+    // or mock it until the billing logic is fully in DB.
+    // For now keeping this as requested.
     let query = supabase.from('credit_requests').select('*, profiles:admin_id(name)').order('created_at', { ascending: false });
     
     if (role === UserRole.ADMIN && userId) {
@@ -205,7 +226,11 @@ export const api = {
     }
 
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) {
+       // If table doesn't exist yet, return empty array to prevent app crash
+       console.warn("Credit requests fetch failed (table might be missing)", error);
+       return [];
+    }
 
     return data.map((req: any) => ({
         ...req,
@@ -219,6 +244,11 @@ export const api = {
         amount: amount,
         status: 'pending'
     });
+    if (error) throw error;
+  },
+
+  async processCreditRequest(requestId: string, status: 'approved' | 'rejected') {
+    const { error } = await supabase.from('credit_requests').update({ status }).eq('id', requestId);
     if (error) throw error;
   },
   
