@@ -17,7 +17,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const [logs, setLogs] = useState<VideoLog[]>([]);
   const [scanBuffer, setScanBuffer] = useState(''); 
   const [isScanning, setIsScanning] = useState(false); 
-  const [showMobileInput, setShowMobileInput] = useState(false); // New: Mobile Manual Input
+  const [showMobileInput, setShowMobileInput] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -32,6 +32,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     window.addEventListener('resize', handleResize);
     
     const handleKeyDown = (e: KeyboardEvent) => {
+        // Don't capture scanner input if typing in a text box
         if (e.target instanceof HTMLInputElement) return;
 
         if (device === 'desktop') {
@@ -117,13 +118,13 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     if (!recording) {
         setAwb(scannedCode);
         setManualAwb('');
-        setShowMobileInput(false); // Close mobile input if open
+        setShowMobileInput(false);
         startRecording();
     } else {
         if (scannedCode === awb) {
             stopRecording();
         } else {
-            if(confirm(`Stopping recording for ${awb}? (Scanned: ${scannedCode})`)) {
+            if(confirm(`Current AWB: ${awb}\nScanned: ${scannedCode}\n\nStop recording?`)) {
                  stopRecording();
             }
         }
@@ -134,14 +135,19 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     setUploading(true);
     try {
         const filename = `${awb}_${Date.now()}.webm`;
+        // 1. Get the fixed URL from backend
         const { uploadUrl } = await api.getUploadToken(filename, 'video/webm');
         
-        await fetch(uploadUrl, {
+        // 2. Upload directly to Google (CORS fixed)
+        const res = await fetch(uploadUrl, {
             method: 'PUT',
             body: blob,
             headers: { 'Content-Type': 'video/webm' }
         });
 
+        if (!res.ok) throw new Error("Upload to Drive failed");
+
+        // 3. Notify Backend
         await api.completeFulfillment({
             awb: awb,
             videoUrl: uploadUrl.split('?')[0] 
@@ -161,29 +167,29 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         };
         setLogs([newLog, ...logs]);
 
-    } catch (err) {
+    } catch (err: any) {
         console.error(err);
-        alert('Upload failed: ' + err);
+        alert('Upload failed: ' + err.message);
     } finally {
         setAwb('');
         setUploading(false);
     }
   };
 
-  // --- Mobile Touch Logic (Fixed for iOS) ---
+  // --- Mobile Touch Logic ---
   const handleTouchStart = (e: React.TouchEvent) => {
-      // Allow interaction with inputs/buttons, but block default on the video container
-      if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'INPUT') return;
+      // Allow buttons/inputs to work normally
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
       
-      e.preventDefault(); // Prevents iOS text selection/magnifier
+      e.preventDefault(); // Stop iOS magnifier
       if (recording) return;
 
       setIsScanning(true);
       
-      // Start 1.5s timer
       scanTimerRef.current = setTimeout(() => {
           setIsScanning(false);
-          // Simulate successful scan
+          // Simulate Scan
           const simulatedCode = `ASEN-${Math.floor(Math.random()*100000)}`;
           handleScan(simulatedCode);
           if (navigator.vibrate) navigator.vibrate(200); 
@@ -215,11 +221,9 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
       {/* Main Viewport */}
       <div 
-        className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none" // touch-none is key for iOS
-        // Bind Mobile Touch Events
+        className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none"
         onTouchStart={device === 'mobile' ? handleTouchStart : undefined}
         onTouchEnd={device === 'mobile' ? handleTouchEnd : undefined}
-        onTouchCancel={device === 'mobile' ? handleTouchEnd : undefined} // Handle drag off screen
       >
         <video 
             ref={videoRef} 
@@ -255,7 +259,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                      <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
                         Hold screen to scan
                     </div>
-                    {/* New Mobile Manual Input Toggle */}
+                    {/* Toggle Manual Input */}
                     <button 
                         onClick={() => setShowMobileInput(true)}
                         className="bg-slate-800/80 p-3 rounded-full text-slate-300 hover:text-white hover:bg-slate-700 backdrop-blur-md"
@@ -318,7 +322,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                                     if(e.key === 'Enter' && manualAwb) handleScan(manualAwb);
                                 }}
                                 disabled={recording}
-                                placeholder={recording ? "Recording..." : "Scan or Type Barcode"}
+                                placeholder={recording ? "Recording in progress..." : "Scan or Type Barcode"}
                                 className="w-full bg-slate-900 border border-slate-700 text-white pl-10 pr-4 py-2.5 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none placeholder:text-slate-500"
                             />
                         </div>
@@ -332,7 +336,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                                 Start
                             </button>
                         ) : (
-                            // NEW: Desktop Stop Button
+                            // Desktop Stop Button
                             <button 
                                 onClick={stopRecording}
                                 className="bg-red-600 hover:bg-red-700 text-white px-4 rounded-lg font-medium transition-colors flex items-center gap-2"
