@@ -24,7 +24,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const chunksRef = useRef<Blob[]>([]);
   const scanTimerRef = useRef<any>(null);
   
-  // FIX: Ref holds the AWB instantly to ensure correct filename
   const awbRef = useRef('');
 
   useEffect(() => {
@@ -118,10 +117,8 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     if (!scannedCode) return;
 
     if (!recording) {
-        // Update both State (for UI) and Ref (for Logic)
         setAwb(scannedCode);
         awbRef.current = scannedCode;
-        
         setManualAwb('');
         setShowMobileInput(false);
         startRecording();
@@ -151,21 +148,19 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const saveVideo = async (blob: Blob) => {
     setUploading(true);
     
-    // FIX: Read from awbRef to guarantee filename is correct
     const currentAwb = awbRef.current || `scan_${Date.now()}`;
     const filename = `${currentAwb}.webm`;
     
     downloadLocally(blob, filename);
 
     try {
-        // 1. Get Token (Background: System finds/creates Daily Folder)
-        const tokenRes: any = await api.getUploadToken(filename, 'video/webm');
+        // 1. Get Token 
+        const tokenRes = await api.getUploadToken(filename, 'video/webm');
         const { uploadUrl, folderId, folderName } = tokenRes;
         
         if (!uploadUrl) throw new Error("No upload URL received");
 
         // 2. Upload to Google
-        // CRITICAL: Content-Type must match exactly what we signed in the backend
         const res = await fetch(uploadUrl, {
             method: 'PUT',
             headers: {
@@ -199,7 +194,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
     } catch (err: any) {
         console.error(err);
-        alert('Cloud Upload Failed (Video saved to device): ' + err.message);
+        alert('Cloud Upload Failed: ' + err.message);
     } finally {
         setAwb('');
         awbRef.current = ''; 
