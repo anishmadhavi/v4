@@ -52,7 +52,6 @@ export const api = {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
 
-    // Use Edge Function to delete from Auth and Profiles
     const response = await fetch(`${FUNCTION_BASE_URL}/admin-user-actions`, {
         method: 'POST',
         headers: {
@@ -103,7 +102,6 @@ export const api = {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
 
-    // 1. Ask backend for the Google Auth URL
     const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
         method: 'POST',
         headers: {
@@ -116,8 +114,6 @@ export const api = {
     if (!response.ok) throw new Error("Failed to start Google Auth");
     
     const data = await response.json();
-    
-    // 2. Redirect the browser
     window.location.href = data.url;
   },
 
@@ -153,7 +149,7 @@ export const api = {
     });
 
     if (!response.ok) throw new Error("Failed to create folder");
-    return await response.json(); // returns { id: '...', name: '...' }
+    return await response.json(); 
   },
 
   // --- Logs & Videos ---
@@ -170,7 +166,6 @@ export const api = {
     const { data, error } = await query;
     if (error) throw error;
     
-    // Flatten packer name
     return data.map((log: any) => ({
       ...log,
       packer_name: log.profiles?.name || 'Unknown'
@@ -187,21 +182,21 @@ export const api = {
         }
     });
     if (!response.ok) throw new Error('Failed to get upload token');
-    return response.json(); 
+    
+    // FIX: Expect folderId in response
+    return response.json() as Promise<{ uploadUrl: string; folderId?: string }>; 
   },
 
-  // --- FULFILLMENT (UPDATED) ---
+  // --- FULFILLMENT ---
 
   async completeFulfillment(data: { awb: string; videoUrl: string; folderId: string; duration?: number }) {
-    // 1. Get Session securely
     const { data: { session } } = await supabase.auth.getSession();
     
-    // 2. Safety Check: Don't call the server if we aren't logged in
     if (!session?.access_token) {
         throw new Error("User is not authenticated. Cannot complete fulfillment.");
     }
 
-    console.log("Sending fulfillment data:", data); // Debug log
+    console.log("Sending fulfillment data:", data);
 
     const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
         method: 'POST',
@@ -209,7 +204,7 @@ export const api = {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
         },
-        // ✅ CRITICAL FIX: Pass 'folderId' from args to 'folder_id' in JSON
+        // FIX: Ensure folder_id matches what backend expects
         body: JSON.stringify({
             awb: data.awb,
             videoUrl: data.videoUrl,
@@ -219,7 +214,6 @@ export const api = {
     });
 
     if (!response.ok) {
-        // Try to read the error message from the backend
         const errorText = await response.text();
         console.error("Backend Error:", errorText);
         throw new Error(`Fulfillment failed: ${errorText}`);
@@ -242,7 +236,7 @@ export const api = {
 
     const { data, error } = await query;
     if (error) {
-       console.warn("Credit requests fetch failed (table might be missing)", error);
+       console.warn("Credit requests fetch failed", error);
        return [];
     }
 
