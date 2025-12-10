@@ -31,9 +31,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     handleResize();
     window.addEventListener('resize', handleResize);
     
-    // Global Keyboard Listener for USB Scanners
     const handleKeyDown = (e: KeyboardEvent) => {
-        // Don't capture scanner input if user is typing in a text box
         if (e.target instanceof HTMLInputElement) return;
 
         if (device === 'desktop') {
@@ -132,7 +130,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- Helper: Download Video Locally (Backup) ---
+  // Helper to Download Video Locally
   const downloadLocally = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -148,37 +146,42 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const saveVideo = async (blob: Blob) => {
     setUploading(true);
     
-    // 1. Generate Filename & Auto-Download Locally
-    const filename = `${awb}_${Date.now()}.webm`;
+    // FIX 1: Capture AWB immediately to prevent "generic name"
+    // Use fallback if somehow empty
+    const currentAwb = awb || `scan_${Date.now()}`;
+    const filename = `${currentAwb}.webm`;
+    
+    // Download locally with CORRECT filename
     downloadLocally(blob, filename);
 
     try {
-        // 2. Get Upload Token
-        const { uploadUrl } = await api.getUploadToken(filename, 'video/webm');
+        // 2. Get the upload URL AND folderId from backend
+        // FIX 2: Destructure folderId
+        const { uploadUrl, folderId } = await api.getUploadToken(filename, 'video/webm');
         
-        // 3. Upload to Google (CORS FIX)
-        // We wrap the blob with an empty type. This prevents the browser from 
-        // sending the "Content-Type" header, effectively bypassing the CORS block.
-        const uploadBody = new Blob([blob], { type: '' });
+        if (!uploadUrl) throw new Error("No upload URL received");
 
+        // 3. Upload directly to Google
         const res = await fetch(uploadUrl, {
             method: 'PUT',
-            body: uploadBody
+            body: blob,
         });
 
         if (!res.ok) throw new Error("Upload to Drive failed");
 
         // 4. Notify Backend of Success
+        // FIX 3: Pass folderId to fulfillment to fix "Missing required fields" error
         await api.completeFulfillment({
-            awb: awb,
-            videoUrl: uploadUrl.split('?')[0] 
+            awb: currentAwb,
+            videoUrl: uploadUrl.split('?')[0],
+            folderId: folderId || 'root' // Fallback to 'root' if undefined
         });
         
-        alert('Video uploaded successfully!');
+        alert(`Video uploaded successfully for ${currentAwb}!`);
         
         const newLog: VideoLog = {
             id: 'temp-' + Date.now(),
-            awb: awb,
+            awb: currentAwb,
             packer_id: packer.id,
             admin_id: packer.organization_id || '',
             created_at: new Date().toISOString(),
@@ -190,7 +193,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
     } catch (err: any) {
         console.error(err);
-        // Alert user, but reassure them the local file is safe
         alert('Cloud Upload Failed (Video saved to device): ' + err.message);
     } finally {
         setAwb('');
@@ -198,20 +200,18 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- Mobile Touch Logic (iOS Fixes) ---
+  // --- Mobile Touch Logic ---
   const handleTouchStart = (e: React.TouchEvent) => {
-      // Allow buttons and inputs to work normally
       const target = e.target as HTMLElement;
       if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
       
-      e.preventDefault(); // Stop iOS magnifier/selection
+      e.preventDefault();
       if (recording) return;
 
       setIsScanning(true);
       
       scanTimerRef.current = setTimeout(() => {
           setIsScanning(false);
-          // Simulate Scan (Demo Mode)
           const simulatedCode = `ASEN-${Math.floor(Math.random()*100000)}`;
           handleScan(simulatedCode);
           if (navigator.vibrate) navigator.vibrate(200); 
@@ -244,7 +244,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
       {/* Main Viewport */}
       <div 
         className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none"
-        // Bind Mobile Touch Events
         onTouchStart={device === 'mobile' ? handleTouchStart : undefined}
         onTouchEnd={device === 'mobile' ? handleTouchEnd : undefined}
       >
@@ -256,7 +255,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             className={`absolute inset-0 w-full h-full object-cover transition-transform duration-200 ${isScanning ? 'scale-105' : 'scale-100'}`}
         />
         
-        {/* Mobile Scanning Visuals */}
         {isScanning && (
             <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/30 pointer-events-none">
                  <div className="w-full h-0.5 bg-red-500 shadow-[0_0_15px_rgba(239,68,68,1)] animate-pulse"></div>
@@ -282,7 +280,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                      <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
                         Hold screen to scan
                     </div>
-                    {/* Toggle Manual Input */}
                     <button 
                         onClick={() => setShowMobileInput(true)}
                         className="bg-slate-800/80 p-3 rounded-full text-slate-300 hover:text-white hover:bg-slate-700 backdrop-blur-md"
@@ -333,7 +330,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             {/* Desktop UI */}
             {device === 'desktop' && (
                 <div className="mb-10 w-full max-w-md pointer-events-auto flex flex-col gap-4">
-                     {/* Manual Input Box */}
                      <div className="flex gap-2 bg-black/80 p-2 rounded-xl border border-slate-700">
                         <div className="relative flex-1">
                             <Keyboard className="absolute left-3 top-3 text-slate-400" size={20} />
@@ -359,7 +355,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                                 Start
                             </button>
                         ) : (
-                            // Desktop Stop Button
                             <button 
                                 onClick={stopRecording}
                                 className="bg-red-600 hover:bg-red-700 text-white px-4 rounded-lg font-medium transition-colors flex items-center gap-2"
