@@ -24,7 +24,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const chunksRef = useRef<Blob[]>([]);
   const scanTimerRef = useRef<any>(null);
   
-  // FIX: Use Ref to hold AWB instantly (State is too slow)
+  // FIX: Ref holds the AWB instantly to ensure correct filename
   const awbRef = useRef('');
 
   useEffect(() => {
@@ -118,7 +118,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     if (!scannedCode) return;
 
     if (!recording) {
-        // FIX: Update BOTH State and Ref
+        // Update both State (for UI) and Ref (for Logic)
         setAwb(scannedCode);
         awbRef.current = scannedCode;
         
@@ -126,7 +126,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         setShowMobileInput(false);
         startRecording();
     } else {
-        // Use Ref for comparison to be safe
         if (scannedCode === awbRef.current) {
             stopRecording();
         } else {
@@ -152,36 +151,39 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const saveVideo = async (blob: Blob) => {
     setUploading(true);
     
-    // FIX: Read from Ref to guarantee we have the value
+    // FIX: Read from awbRef to guarantee filename is correct
     const currentAwb = awbRef.current || `scan_${Date.now()}`;
     const filename = `${currentAwb}.webm`;
     
     downloadLocally(blob, filename);
 
     try {
-        const { uploadUrl, folderId } = await api.getUploadToken(filename, 'video/webm');
+        // 1. Get Token (Background: System finds/creates Daily Folder)
+        const tokenRes: any = await api.getUploadToken(filename, 'video/webm');
+        const { uploadUrl, folderId, folderName } = tokenRes;
         
         if (!uploadUrl) throw new Error("No upload URL received");
-        
-        // Debugging for User
-        if (!folderId) {
-            console.warn("⚠️ Warning: No Google Drive Folder ID returned. Video will be in Root.");
-        }
 
+        // 2. Upload to Google
+        // CRITICAL: Content-Type must match exactly what we signed in the backend
         const res = await fetch(uploadUrl, {
             method: 'PUT',
+            headers: {
+                'Content-Type': 'video/webm'
+            },
             body: blob,
         });
 
         if (!res.ok) throw new Error("Upload to Drive failed");
 
+        // 3. Backend Fulfillment
         await api.completeFulfillment({
             awb: currentAwb,
             videoUrl: uploadUrl.split('?')[0],
             folderId: folderId || '' 
         });
         
-        alert(`Video uploaded successfully! ${!folderId ? '(Saved to Drive Root - Check Admin Settings)' : ''}`);
+        alert(`Video uploaded successfully!\nSaved to: ${folderName || 'Root'}`);
         
         const newLog: VideoLog = {
             id: 'temp-' + Date.now(),
@@ -200,12 +202,11 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         alert('Cloud Upload Failed (Video saved to device): ' + err.message);
     } finally {
         setAwb('');
-        awbRef.current = ''; // Clear Ref
+        awbRef.current = ''; 
         setUploading(false);
     }
   };
 
-  // --- Mobile Touch Logic ---
   const handleTouchStart = (e: React.TouchEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
@@ -234,7 +235,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
-      {/* Header */}
       <div className="bg-slate-900 p-4 flex justify-between items-center border-b border-slate-800 z-10">
         <div>
             <div className="font-bold flex items-center gap-2">
@@ -246,7 +246,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         <button onClick={onLogout} className="text-slate-400 hover:text-white"><LogOut /></button>
       </div>
 
-      {/* Main Viewport */}
       <div 
         className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none"
         onTouchStart={device === 'mobile' ? handleTouchStart : undefined}
@@ -269,9 +268,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             </div>
         )}
 
-        {/* Overlay UI */}
         <div className="absolute inset-0 flex flex-col items-center justify-between p-6 pointer-events-none">
-            {/* Top Status */}
             <div className="bg-black/60 backdrop-blur-md px-6 py-2 rounded-full mt-4 flex items-center gap-3 pointer-events-auto">
                 <div className={`w-3 h-3 rounded-full ${recording ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
                 <span className="font-mono font-bold tracking-wider">
@@ -279,7 +276,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                 </span>
             </div>
 
-            {/* Mobile UI Layers */}
             {device === 'mobile' && !recording && !isScanning && !showMobileInput && (
                 <div className="flex flex-col items-center gap-4 mb-20 pointer-events-auto">
                      <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
@@ -294,7 +290,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                 </div>
             )}
 
-            {/* Mobile Manual Input Modal */}
             {device === 'mobile' && showMobileInput && !recording && (
                  <div className="pointer-events-auto bg-black/80 p-4 rounded-xl w-full max-w-xs mb-20 backdrop-blur-md border border-slate-700">
                     <div className="flex justify-between items-center mb-2">
@@ -319,7 +314,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                  </div>
             )}
 
-            {/* Mobile Stop Button */}
             {device === 'mobile' && recording && (
                 <div className="pointer-events-auto mb-20">
                      <button 
@@ -332,7 +326,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                 </div>
             )}
 
-            {/* Desktop UI */}
             {device === 'desktop' && (
                 <div className="mb-10 w-full max-w-md pointer-events-auto flex flex-col gap-4">
                      <div className="flex gap-2 bg-black/80 p-2 rounded-xl border border-slate-700">
@@ -387,7 +380,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         )}
       </div>
 
-      {/* Desktop History Log */}
       {device === 'desktop' && (
           <div className="h-48 bg-slate-900 border-t border-slate-800 overflow-y-auto p-4">
               <h3 className="text-sm font-bold text-slate-400 mb-3 uppercase tracking-wider flex items-center gap-2">
