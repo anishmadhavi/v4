@@ -31,8 +31,9 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     handleResize();
     window.addEventListener('resize', handleResize);
     
+    // Global Keyboard Listener for USB Scanners
     const handleKeyDown = (e: KeyboardEvent) => {
-        // Don't capture scanner input if typing in a text box
+        // Don't capture scanner input if user is typing in a text box
         if (e.target instanceof HTMLInputElement) return;
 
         if (device === 'desktop') {
@@ -131,7 +132,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- NEW: Helper to Download Video Locally ---
+  // --- Helper: Download Video Locally (Backup) ---
   const downloadLocally = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -147,19 +148,22 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const saveVideo = async (blob: Blob) => {
     setUploading(true);
     
-    // 1. Generate Filename & Download Locally Immediately
+    // 1. Generate Filename & Auto-Download Locally
     const filename = `${awb}_${Date.now()}.webm`;
     downloadLocally(blob, filename);
 
     try {
-        // 2. Get the upload URL from backend
+        // 2. Get Upload Token
         const { uploadUrl } = await api.getUploadToken(filename, 'video/webm');
         
-        // 3. Upload directly to Google (CORS FIX: No custom headers here)
+        // 3. Upload to Google (CORS FIX)
+        // We wrap the blob with an empty type. This prevents the browser from 
+        // sending the "Content-Type" header, effectively bypassing the CORS block.
+        const uploadBody = new Blob([blob], { type: '' });
+
         const res = await fetch(uploadUrl, {
             method: 'PUT',
-            body: blob,
-            // Headers removed intentionally to prevent preflight check failure
+            body: uploadBody
         });
 
         if (!res.ok) throw new Error("Upload to Drive failed");
@@ -186,7 +190,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
     } catch (err: any) {
         console.error(err);
-        // We alert user, but since video is downloaded locally, data is safe.
+        // Alert user, but reassure them the local file is safe
         alert('Cloud Upload Failed (Video saved to device): ' + err.message);
     } finally {
         setAwb('');
@@ -194,20 +198,20 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- Mobile Touch Logic ---
+  // --- Mobile Touch Logic (iOS Fixes) ---
   const handleTouchStart = (e: React.TouchEvent) => {
-      // Allow buttons/inputs to work normally
+      // Allow buttons and inputs to work normally
       const target = e.target as HTMLElement;
       if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
       
-      e.preventDefault(); // Stop iOS magnifier
+      e.preventDefault(); // Stop iOS magnifier/selection
       if (recording) return;
 
       setIsScanning(true);
       
       scanTimerRef.current = setTimeout(() => {
           setIsScanning(false);
-          // Simulate Scan
+          // Simulate Scan (Demo Mode)
           const simulatedCode = `ASEN-${Math.floor(Math.random()*100000)}`;
           handleScan(simulatedCode);
           if (navigator.vibrate) navigator.vibrate(200); 
@@ -240,6 +244,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
       {/* Main Viewport */}
       <div 
         className="flex-1 relative overflow-hidden flex flex-col items-center justify-center bg-gray-900 select-none touch-none"
+        // Bind Mobile Touch Events
         onTouchStart={device === 'mobile' ? handleTouchStart : undefined}
         onTouchEnd={device === 'mobile' ? handleTouchEnd : undefined}
       >
