@@ -160,8 +160,6 @@ export const api = {
 
   async getLogs(userId: string, role: UserRole): Promise<VideoLog[]> {
     let query = supabase.from('logs').select('*, profiles:packer_id(name)').order('created_at', { ascending: false });
-    // Note: Table name in schema was 'logs', but sometimes referenced as 'video_logs'. 
-    // Using 'logs' based on your provided schema.txt
     
     if (role === UserRole.ADMIN) {
       query = query.eq('admin_id', userId);
@@ -192,9 +190,9 @@ export const api = {
     return response.json(); 
   },
 
-  // Inside src/services/api.ts
+  // --- FULFILLMENT (UPDATED) ---
 
-  async completeFulfillment(data: { awb: string; videoUrl: string; duration?: number }) {
+  async completeFulfillment(data: { awb: string; videoUrl: string; folderId: string; duration?: number }) {
     // 1. Get Session securely
     const { data: { session } } = await supabase.auth.getSession();
     
@@ -211,7 +209,13 @@ export const api = {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify(data) // Since you use fetch, send 'data' directly (no 'body' wrapper needed)
+        // ✅ CRITICAL UPDATE: We now send 'folder_id' to the backend
+        body: JSON.stringify({
+            awb: data.awb,
+            videoUrl: data.videoUrl,
+            folder_id: data.folderId, 
+            duration: data.duration
+        })
     });
 
     if (!response.ok) {
@@ -228,9 +232,6 @@ export const api = {
   // --- Credits ---
 
   async getCreditRequests(role: UserRole, userId?: string): Promise<CreditRequest[]> {
-    // Note: Assuming 'credit_requests' table exists, if not, you might need to create it 
-    // or mock it until the billing logic is fully in DB.
-    // For now keeping this as requested.
     let query = supabase.from('credit_requests').select('*, profiles:admin_id(name)').order('created_at', { ascending: false });
     
     if (role === UserRole.ADMIN && userId) {
@@ -241,7 +242,6 @@ export const api = {
 
     const { data, error } = await query;
     if (error) {
-       // If table doesn't exist yet, return empty array to prevent app crash
        console.warn("Credit requests fetch failed (table might be missing)", error);
        return [];
     }
