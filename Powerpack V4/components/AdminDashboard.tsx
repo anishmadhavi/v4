@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase'; // Fixed Import
-import { UserProfile, UserRole, VideoLog, CreditRequest, IntegrationConfig } from '../types';
+import { supabase } from '../lib/supabase';
+import { UserProfile, UserRole, VideoLog, CreditRequest } from '../types';
 import { api } from '../services/api';
 import { 
   LayoutDashboard, Users, CreditCard, Settings, LogOut, 
@@ -443,20 +443,35 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
     const handleSave = async () => {
         let finalFolderId = selectedFolder;
+        // Start with the existing sheetId in case we don't create a new one
+        let finalSheetId = user.integrations?.googleSheetId; 
+
         if (selectedFolder === 'create_new') {
             const folderName = prompt("Enter new folder name:", "VideoVerify Proofs");
             if (folderName) {
                 try {
-                    const newFolder = await api.createDriveFolder(folderName);
-                    setDriveFolders([...driveFolders, newFolder]);
-                    finalFolderId = newFolder.id;
-                    setSelectedFolder(newFolder.id);
+                    // This now returns { id, name, sheetId }
+                    const newFolderData = await api.createDriveFolder(folderName);
+                    
+                    // 1. Update the Dropdown list locally so the UI reflects the new folder
+                    setDriveFolders([...driveFolders, { id: newFolderData.id, name: newFolderData.name }]);
+                    
+                    // 2. Select the new folder ID
+                    finalFolderId = newFolderData.id;
+                    setSelectedFolder(newFolderData.id);
+
+                    // 3. Capture the new Sheet ID if it was created
+                    if (newFolderData.sheetId) {
+                        finalSheetId = newFolderData.sheetId;
+                    }
+
                 } catch (e) {
-                    alert("Failed to create folder");
+                    alert("Failed to create folder. Please try again.");
+                    console.error(e);
                     return;
                 }
             } else {
-                return;
+                return; // User cancelled the prompt
             }
         }
 
@@ -467,11 +482,14 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
             whatsappConfig,
             googleConnected,
             googleFolderId: finalFolderId,
-            googleSheetId: user.integrations?.googleSheetId
+            googleSheetId: finalSheetId // Use the updated variable
         };
+
         try {
             await api.updateIntegrationConfig(user.id, config);
             alert('Settings saved successfully!');
+            // Optional: Reload page to reflect new "Open Sheet" link if needed, 
+            // or just rely on state if parent re-renders (User object update might be needed)
         } catch (e: any) {
             alert('Failed to save settings: ' + e.message);
         }
