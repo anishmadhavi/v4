@@ -171,10 +171,17 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
         if (!res.ok) throw new Error("Upload to Drive failed");
 
-        // 3. Backend Fulfillment
+        // FIX: Extract the REAL File ID from Google's response
+        const googleData = await res.json();
+        const fileId = googleData.id;
+        
+        // Construct the viewable link
+        const realVideoUrl = `https://drive.google.com/file/d/${fileId}/view`;
+
+        // 3. Backend Fulfillment (Send the REAL link now)
         await api.completeFulfillment({
             awb: currentAwb,
-            videoUrl: uploadUrl.split('?')[0],
+            videoUrl: realVideoUrl, 
             folderId: folderId || '' 
         });
         
