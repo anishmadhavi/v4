@@ -5,7 +5,7 @@ import { api } from '../services/api';
 import { 
   LayoutDashboard, Users, CreditCard, Settings, LogOut, 
   Plus, Video, Trash2, Key, ExternalLink, Copy, HelpCircle,
-  Folder, FileSpreadsheet, Check, Clock
+  Folder, FileSpreadsheet, Check, Clock, Save, Link2Off, RefreshCw
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
@@ -23,9 +23,7 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
       try {
         const data = await api.getLogs(user.id, UserRole.ADMIN);
         setLogs(data);
-      } catch (e) {
-        console.error(e);
-      }
+      } catch (e) { console.error(e); }
     };
     fetchLogs();
     const interval = setInterval(fetchLogs, 10000); 
@@ -36,7 +34,7 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     total: logs.length,
     failed: logs.filter(l => l.whatsapp_status === 'failed').length,
     creditsUsed: logs.length, 
-    pending: logs.filter(l => l.status === 'pending').length
+    pending: logs.filter(l => l.whatsapp_status === 'Pending').length
   };
 
   const chartData = logs.slice(0, 7).reverse().map((log) => ({
@@ -44,27 +42,53 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     value: 1
   }));
 
+  // NEW: Quick Link to Sheet
+  const sheetId = user.integrations?.googleSheetId;
+
   return (
     <div className="space-y-6">
+      {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
             <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Credits Used</div>
             <div className="text-2xl font-bold text-slate-800">{stats.creditsUsed}</div>
         </div>
         <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-            <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Failed Notifications</div>
+            <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Failed</div>
             <div className="text-2xl font-bold text-red-600">{stats.failed}</div>
         </div>
         <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-            <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Available Credits</div>
+            <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Available</div>
             <div className="text-2xl font-bold text-blue-600">{user.credits || 0}</div>
         </div>
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 relative overflow-hidden">
             <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Pending</div>
             <div className="text-2xl font-bold text-orange-500">{stats.pending}</div>
+            {stats.pending > 0 && (
+                <div className="absolute right-2 top-2 w-2 h-2 bg-orange-500 rounded-full animate-ping"></div>
+            )}
         </div>
       </div>
 
+      {/* Sheet Link Banner */}
+      {sheetId && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex justify-between items-center">
+              <div className="flex items-center gap-2 text-green-800">
+                  <FileSpreadsheet size={18} />
+                  <span className="font-medium text-sm">Your Fulfillment Logs are syncing to Google Sheets</span>
+              </div>
+              <a 
+                href={`https://docs.google.com/spreadsheets/d/${sheetId}`} 
+                target="_blank" 
+                rel="noreferrer"
+                className="text-xs bg-white border border-green-200 text-green-700 px-3 py-1.5 rounded-md hover:bg-green-100 flex items-center gap-1 font-bold"
+              >
+                  Open Sheet <ExternalLink size={10} />
+              </a>
+          </div>
+      )}
+
+      {/* Charts & Tables */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="p-4 border-b border-slate-100 flex justify-between items-center">
@@ -89,7 +113,9 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                     <td className="px-4 py-3 text-slate-500">{new Date(log.created_at).toLocaleTimeString()}</td>
                     <td className="px-4 py-3">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                            log.whatsapp_status === 'sent' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
+                            log.whatsapp_status === 'sent' ? 'bg-green-100 text-green-700' : 
+                            log.whatsapp_status === 'Pending' ? 'bg-orange-100 text-orange-700' :
+                            'bg-red-100 text-red-700'
                         }`}>
                             {log.whatsapp_status}
                         </span>
@@ -125,7 +151,7 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   );
 };
 
-// --- PACKERS TAB ---
+// --- PACKERS TAB (Preserved) ---
 const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   const [packers, setPackers] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -314,7 +340,7 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   );
 };
 
-// --- BILLING TAB ---
+// --- BILLING TAB (Preserved) ---
 const BillingTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [amount, setAmount] = useState(500); 
     const [requests, setRequests] = useState<CreditRequest[]>([]);
@@ -367,24 +393,25 @@ const BillingTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     );
 };
 
-// --- SETTINGS TAB (UPDATED) ---
+// --- SETTINGS TAB (UPDATED UI) ---
 const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
+    // 1. Website State
     const [platform, setPlatform] = useState(user.integrations?.ecommercePlatform || 'None');
     const [platformConfig, setPlatformConfig] = useState(user.integrations?.platformConfig || {});
-    
-    // NEW: Fulfillment Delay State
     const [fulfillmentDelay, setFulfillmentDelay] = useState<number>(user.integrations?.fulfillmentDelay || 60);
 
+    // 2. WhatsApp State
     const [whatsapp, setWhatsapp] = useState(user.integrations?.whatsappProvider || 'None');
     const [whatsappConfig, setWhatsappConfig] = useState(user.integrations?.whatsappConfig || {});
 
-    // Google State
+    // 3. Google State
     const [googleConnected, setGoogleConnected] = useState(user.integrations?.googleConnected || false);
     const [driveFolders, setDriveFolders] = useState<{id: string, name: string}[]>([]);
     const [selectedFolder, setSelectedFolder] = useState(user.integrations?.googleFolderId || '');
+    const [sheetId, setSheetId] = useState(user.integrations?.googleSheetId || '');
     const [loading, setLoading] = useState(false);
 
-    // 1. LISTEN FOR OAUTH REDIRECT
+    // --- GOOGLE OAUTH LISTENER ---
     useEffect(() => {
         const handleOAuthRedirect = async () => {
             const params = new URLSearchParams(window.location.search);
@@ -415,7 +442,8 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                     if (!response.ok) throw new Error('Token exchange failed');
 
                     setGoogleConnected(true);
-                    alert("Google Account Connected Successfully!");
+                    alert("Google Connected! Now setting up folders...");
+                    
                     const folders = await api.getDriveFolders();
                     setDriveFolders(folders);
 
@@ -427,55 +455,95 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                 }
             }
         };
-
         handleOAuthRedirect();
     }, [user.id]);
 
+    // --- AUTO-CREATE SHEET LOGIC ---
     useEffect(() => {
-        if (googleConnected) {
-            api.getDriveFolders().then(setDriveFolders).catch(console.error);
-        }
-    }, [googleConnected]);
-
-    const handleSave = async () => {
-        let finalFolderId = selectedFolder;
-        if (selectedFolder === 'create_new') {
-            const folderName = prompt("Enter new folder name:", "VideoVerify Proofs");
-            if (folderName) {
+        const autoSetupSheet = async () => {
+            // Only if connected, folder selected, but NO sheet yet
+            if (googleConnected && selectedFolder && !sheetId) {
                 try {
-                    const newFolder = await api.createDriveFolder(folderName);
-                    setDriveFolders([...driveFolders, newFolder]);
-                    finalFolderId = newFolder.id;
-                    setSelectedFolder(newFolder.id);
+                    setLoading(true);
+                    console.log("Auto-generating sheet...");
+                    const newSheet = await api.createLogSheet(user.id, selectedFolder);
+                    setSheetId(newSheet.id);
+                    
+                    // Update Local State immediately
+                    const newConfig = { 
+                        ...user.integrations, 
+                        googleSheetId: newSheet.id,
+                        googleFolderId: selectedFolder
+                    };
+                    await api.updateIntegrationConfig(user.id, newConfig);
+                    
                 } catch (e) {
-                    alert("Failed to create folder");
-                    return;
+                    console.error("Sheet creation failed", e);
+                } finally {
+                    setLoading(false);
                 }
-            } else {
-                return;
             }
-        }
-
-        const config = {
-            ecommercePlatform: platform,
-            platformConfig,
-            fulfillmentDelay, // SAVE THE DELAY
-            whatsappProvider: whatsapp,
-            whatsappConfig,
-            googleConnected,
-            googleFolderId: finalFolderId,
-            googleSheetId: user.integrations?.googleSheetId
         };
+
+        if (selectedFolder && selectedFolder !== 'create_new') {
+            autoSetupSheet();
+        }
+    }, [selectedFolder, googleConnected, sheetId, user.id]);
+
+    // --- INDIVIDUAL SAVE HANDLERS ---
+    
+    const saveWebsiteSettings = async () => {
+        const config = { ...user.integrations, ecommercePlatform: platform, platformConfig, fulfillmentDelay };
         try {
             await api.updateIntegrationConfig(user.id, config);
-            alert('Settings saved successfully!');
-        } catch (e: any) {
-            alert('Failed to save settings: ' + e.message);
+            alert('Website Settings Saved!');
+        } catch (e: any) { alert('Save failed: ' + e.message); }
+    };
+
+    const saveWhatsAppSettings = async () => {
+        const config = { ...user.integrations, whatsappProvider: whatsapp, whatsappConfig };
+        try {
+            await api.updateIntegrationConfig(user.id, config);
+            alert('WhatsApp Settings Saved!');
+        } catch (e: any) { alert('Save failed: ' + e.message); }
+    };
+
+    const handleDisconnectGoogle = async () => {
+        if(!confirm("Are you sure? This will stop video uploads.")) return;
+        try {
+            await api.disconnectGoogle(user.id);
+            setGoogleConnected(false);
+            setDriveFolders([]);
+            setSelectedFolder('');
+            setSheetId('');
+            alert("Google Account Disconnected");
+        } catch(e: any) { alert("Disconnect failed"); }
+    };
+
+    const handleFolderChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const val = e.target.value;
+        if (val === 'create_new') {
+            const name = prompt("Enter new folder name:", "VideoVerify Proofs");
+            if (name) {
+                try {
+                    const newF = await api.createDriveFolder(name);
+                    setDriveFolders([...driveFolders, newF]);
+                    setSelectedFolder(newF.id);
+                    // Trigger save implicitly for folder
+                    const config = { ...user.integrations, googleFolderId: newF.id };
+                    await api.updateIntegrationConfig(user.id, config);
+                } catch(e) { alert("Folder creation failed"); }
+            }
+        } else {
+            setSelectedFolder(val);
+             // Trigger save implicitly
+             const config = { ...user.integrations, googleFolderId: val };
+             await api.updateIntegrationConfig(user.id, config);
         }
     };
 
     const copyTemplate = () => {
-        const template = `Hi {{1}},
+         const template = `Hi {{1}},
 
 Your Order #{{2}} has been packed and is ready for dispatch! 📦
 
@@ -483,7 +551,7 @@ To ensure quality, we have recorded a video proof of your package.
 
 You can watch your packing video here: {{3}}`;
         navigator.clipboard.writeText(template);
-        alert('Template copied to clipboard!');
+        alert('Template copied!');
     };
 
     const getHelpLink = (provider: string) => {
@@ -497,20 +565,21 @@ You can watch your packing video here: {{3}}`;
         return links[provider] || '#';
     };
 
-    const handleGoogleConnect = () => {
-        api.initiateGoogleAuth(user.id);
-    };
-
-    if (loading) return <div className="p-10 text-center text-blue-600 font-bold">Connecting to Google... Please wait...</div>;
+    if (loading) return <div className="p-10 text-center text-blue-600 font-bold flex flex-col items-center gap-4"><RefreshCw className="animate-spin" /> Processing Google Integration...</div>;
 
     return (
-        <div className="max-w-4xl mx-auto space-y-8">
+        <div className="max-w-4xl mx-auto space-y-8 pb-10">
             
             {/* 1. Website Integration */}
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                    <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><LayoutDashboard size={20} /></div>
-                    <h3 className="font-bold text-lg text-slate-800">Website Integration</h3>
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative">
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
+                     <div className="flex items-center gap-3">
+                        <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><LayoutDashboard size={20} /></div>
+                        <h3 className="font-bold text-lg text-slate-800">Website Integration</h3>
+                     </div>
+                     <button onClick={saveWebsiteSettings} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700">
+                        <Save size={16} /> Save Changes
+                     </button>
                 </div>
                 
                 <div className="space-y-4">
@@ -526,11 +595,9 @@ You can watch your packing video here: {{3}}`;
                                 <option value="Shopify">Shopify</option>
                                 <option value="WooCommerce">WooCommerce</option>
                                 <option value="BigCommerce">BigCommerce</option>
-                                <option value="Other">Other (Custom)</option>
                             </select>
                         </div>
 
-                        {/* NEW: FULFILLMENT DELAY DROPDOWN */}
                         <div>
                             <label className="block text-sm font-medium mb-1 text-slate-700">Process Delay (Pause)</label>
                             <div className="relative">
@@ -539,7 +606,6 @@ You can watch your packing video here: {{3}}`;
                                     onChange={(e) => setFulfillmentDelay(Number(e.target.value))}
                                     className="w-full border rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-blue-500 outline-none pl-9"
                                 >
-                                    <option value={1}>1 Minutes</option>
                                     <option value={15}>15 Minutes</option>
                                     <option value={30}>30 Minutes</option>
                                     <option value={60}>1 Hour</option>
@@ -552,46 +618,23 @@ You can watch your packing video here: {{3}}`;
                     </div>
 
                     {platform !== 'None' && (
-                        <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200 animate-in fade-in slide-in-from-top-2">
-                            <div className="flex justify-between items-center text-xs text-blue-600">
-                                <span className="font-semibold uppercase tracking-wider">Credentials Required</span>
-                                <a href={getHelpLink(platform)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
-                                    <HelpCircle size={12} /> How to find keys?
-                                </a>
-                            </div>
-
-                            {platform === 'Shopify' && (
+                        <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200">
+                            {/* ... Fields preserved from previous version ... */}
+                             {platform === 'Shopify' && (
                                 <>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">Shop Domain (e.g., store.myshopify.com)</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" placeholder="my-store.myshopify.com"
-                                            value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">Admin API Access Token</label>
-                                        <input type="password" className="w-full border rounded-lg p-2" placeholder="shpat_..."
-                                            value={platformConfig.apiKey || ''} onChange={e => setPlatformConfig({...platformConfig, apiKey: e.target.value})} />
-                                    </div>
+                                    <div><label className="block text-xs font-medium text-slate-500">Shop Domain</label>
+                                    <input type="text" className="w-full border rounded-lg p-2" value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} /></div>
+                                    <div><label className="block text-xs font-medium text-slate-500">Access Token</label>
+                                    <input type="password" className="w-full border rounded-lg p-2" value={platformConfig.apiKey || ''} onChange={e => setPlatformConfig({...platformConfig, apiKey: e.target.value})} /></div>
                                 </>
                             )}
-                             {(platform === 'WooCommerce') && (
+                            {platform === 'WooCommerce' && (
                                 <>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">Store URL</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" placeholder="https://mystore.com"
-                                            value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} />
-                                    </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-xs font-medium text-slate-500 mb-1">Consumer Key</label>
-                                            <input type="text" className="w-full border rounded-lg p-2" placeholder="ck_..."
-                                                value={platformConfig.key || ''} onChange={e => setPlatformConfig({...platformConfig, key: e.target.value})} />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-medium text-slate-500 mb-1">Consumer Secret</label>
-                                            <input type="password" className="w-full border rounded-lg p-2" placeholder="cs_..."
-                                                value={platformConfig.secret || ''} onChange={e => setPlatformConfig({...platformConfig, secret: e.target.value})} />
-                                        </div>
+                                    <div><label className="block text-xs font-medium text-slate-500">Store URL</label>
+                                    <input type="text" className="w-full border rounded-lg p-2" value={platformConfig.domain || ''} onChange={e => setPlatformConfig({...platformConfig, domain: e.target.value})} /></div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div><label className="block text-xs font-medium text-slate-500">Key</label><input type="text" className="w-full border rounded-lg p-2" value={platformConfig.key || ''} onChange={e => setPlatformConfig({...platformConfig, key: e.target.value})} /></div>
+                                        <div><label className="block text-xs font-medium text-slate-500">Secret</label><input type="password" className="w-full border rounded-lg p-2" value={platformConfig.secret || ''} onChange={e => setPlatformConfig({...platformConfig, secret: e.target.value})} /></div>
                                     </div>
                                 </>
                             )}
@@ -600,142 +643,100 @@ You can watch your packing video here: {{3}}`;
                 </div>
             </div>
 
-            {/* 2. WhatsApp Integration (Preserved) */}
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                    <div className="bg-green-100 p-2 rounded-lg text-green-600"><Users size={20} /></div>
-                    <h3 className="font-bold text-lg text-slate-800">WhatsApp Integration</h3>
+            {/* 2. WhatsApp Integration */}
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative">
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-green-100 p-2 rounded-lg text-green-600"><Users size={20} /></div>
+                        <h3 className="font-bold text-lg text-slate-800">WhatsApp Integration</h3>
+                    </div>
+                    <button onClick={saveWhatsAppSettings} className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-green-700">
+                        <Save size={16} /> Save Changes
+                     </button>
                 </div>
 
                 <div className="space-y-4">
                     <div>
                         <label className="block text-sm font-medium mb-1 text-slate-700">Service Provider</label>
-                        <select 
-                            value={whatsapp}
-                            onChange={(e) => setWhatsapp(e.target.value)}
-                            className="w-full border rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-green-500 outline-none"
-                        >
+                        <select value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} className="w-full border rounded-lg p-2.5 bg-white">
                             <option value="None">Select Provider</option>
                             <option value="Interakt">Interakt</option>
                             <option value="Wati">Wati</option>
                             <option value="AiSensy">AiSensy</option>
-                            <option value="Bitespeed">Bitespeed</option>
-                            <option value="Other">Other</option>
                         </select>
                     </div>
 
                     {whatsapp !== 'None' && (
                         <div className="space-y-6">
                             <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200">
-                                <div className="flex justify-between items-center text-xs text-green-600">
-                                    <span className="font-semibold uppercase tracking-wider">API Configuration</span>
-                                    <a href={getHelpLink(whatsapp)} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline">
-                                        <HelpCircle size={12} /> Get API Key
-                                    </a>
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-500 mb-1">API Key / Auth Token</label>
-                                    <input type="password" className="w-full border rounded-lg p-2" placeholder="Paste your key here..."
-                                        value={whatsappConfig.apiKey || ''} onChange={e => setWhatsappConfig({...whatsappConfig, apiKey: e.target.value})} />
-                                </div>
+                                <div><label className="block text-xs font-medium text-slate-500">API Key</label>
+                                <input type="password" className="w-full border rounded-lg p-2" value={whatsappConfig.apiKey || ''} onChange={e => setWhatsappConfig({...whatsappConfig, apiKey: e.target.value})} /></div>
                                 {whatsapp === 'Wati' && (
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1">API Endpoint URL</label>
-                                        <input type="text" className="w-full border rounded-lg p-2" placeholder="https://live-server-XXXX.wati.io"
-                                            value={whatsappConfig.url || ''} onChange={e => setWhatsappConfig({...whatsappConfig, url: e.target.value})} />
-                                    </div>
+                                    <div><label className="block text-xs font-medium text-slate-500">API URL</label>
+                                    <input type="text" className="w-full border rounded-lg p-2" value={whatsappConfig.url || ''} onChange={e => setWhatsappConfig({...whatsappConfig, url: e.target.value})} /></div>
                                 )}
                             </div>
-
                             <div className="border border-blue-100 bg-blue-50/50 p-5 rounded-xl">
-                                <h4 className="font-bold text-slate-800 mb-2 flex items-center gap-2">
-                                    <span className="bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs">!</span>
-                                    Template Setup Required
-                                </h4>
-                                <p className="text-sm text-slate-600 mb-4">
-                                    You must create a <strong>Utility</strong> template in your {whatsapp} dashboard with exactly <strong>3 variables</strong>:
-                                    1. Customer Name, 2. Order ID, 3. Video Link.
-                                </p>
-                                
-                                <div className="bg-white border border-slate-200 p-3 rounded-lg font-mono text-xs text-slate-600 relative group">
-                                    <pre className="whitespace-pre-wrap">
-{`Hi {{1}},
-
-Your Order #{{2}} has been packed and is ready for dispatch! 📦
-
-To ensure quality, we have recorded a video proof of your package.
-
-You can watch your packing video here: {{3}}`}
-                                    </pre>
-                                    <button onClick={copyTemplate} className="absolute top-2 right-2 bg-slate-100 hover:bg-slate-200 p-2 rounded text-slate-600" title="Copy Template">
-                                        <Copy size={14} />
-                                    </button>
-                                </div>
-
-                                <div className="mt-4">
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Your Template Name</label>
-                                    <input type="text" className="w-full border rounded-lg p-2 bg-white" placeholder="e.g., parcel_packed_video_v1"
-                                        value={whatsappConfig.templateName || ''} onChange={e => setWhatsappConfig({...whatsappConfig, templateName: e.target.value})} />
-                                    <p className="text-xs text-slate-500 mt-1">Enter the exact name of the approved template from your provider.</p>
-                                </div>
+                                <h4 className="font-bold text-slate-800 mb-2">Template Name</h4>
+                                <input type="text" className="w-full border rounded-lg p-2 bg-white" placeholder="e.g., parcel_packed_video_v1"
+                                    value={whatsappConfig.templateName || ''} onChange={e => setWhatsappConfig({...whatsappConfig, templateName: e.target.value})} />
                             </div>
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* 3. Google Integration (Preserved) */}
-            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
-                    <div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div>
-                    <h3 className="font-bold text-lg text-slate-800">Google Connect</h3>
+            {/* 3. Google Integration */}
+            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative">
+                <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div>
+                        <h3 className="font-bold text-lg text-slate-800">Google Connect</h3>
+                    </div>
+                    {googleConnected && (
+                        <button onClick={handleDisconnectGoogle} className="flex items-center gap-2 bg-red-50 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-100">
+                            <Link2Off size={16} /> Disconnect
+                        </button>
+                    )}
                 </div>
 
                 <div className="flex flex-col md:flex-row gap-6 items-start">
                     <div className="flex-1 space-y-4">
-                        <p className="text-sm text-slate-600">Connect your Google account to store video proofs in Drive and log activities in Sheets.</p>
-                        
                         {!googleConnected ? (
-                            <button onClick={handleGoogleConnect} className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-4 rounded-lg transition-colors">
+                            <button onClick={() => api.initiateGoogleAuth(user.id)} className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-4 rounded-lg">
                                 <img src="https://www.google.com/favicon.ico" alt="G" className="w-4 h-4" />
                                 Connect Google Account
                             </button>
                         ) : (
                             <div className="space-y-4">
                                 <div className="flex items-center gap-2 text-green-600 bg-green-50 p-3 rounded-lg border border-green-100">
-                                    <Check size={16} /> Google Account Connected
+                                    <Check size={16} /> Connected
                                 </div>
 
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Video Storage Folder</label>
-                                    <div className="flex gap-2">
-                                        <select 
-                                            value={selectedFolder}
-                                            onChange={(e) => setSelectedFolder(e.target.value)}
-                                            className="flex-1 border rounded-lg p-2 bg-white"
-                                        >
-                                            <option value="">Select a Folder</option>
-                                            <option value="create_new">+ Create New Folder</option>
-                                            {driveFolders.map(f => (
-                                                <option key={f.id} value={f.id}>{f.name}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <p className="text-xs text-slate-500 mt-1">
-                                        {driveFolders.length === 0 ? "Fetching folders..." : "Select the folder to store videos."}
-                                    </p>
+                                    <select value={selectedFolder} onChange={handleFolderChange} className="w-full border rounded-lg p-2 bg-white">
+                                        <option value="">Select Folder</option>
+                                        <option value="create_new">+ Create New Folder</option>
+                                        {driveFolders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                                    </select>
                                 </div>
 
+                                {/* AUTO-GENERATED SHEET STATUS */}
                                 <div className="flex items-center gap-3 pt-2">
-                                    <FileSpreadsheet className="text-green-600" size={20} />
-                                    <div>
+                                    <FileSpreadsheet className={sheetId ? "text-green-600" : "text-slate-400"} size={20} />
+                                    <div className="flex-1">
                                         <div className="text-sm font-medium text-slate-800">Fulfillment Log Sheet</div>
-                                        {user.integrations?.googleSheetId ? (
-                                            <a href={`https://docs.google.com/spreadsheets/d/${user.integrations.googleSheetId}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                                                Open Sheet <ExternalLink size={10} />
+                                        {sheetId ? (
+                                            <a href={`https://docs.google.com/spreadsheets/d/${sheetId}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                                                Powerpack Logs (Auto-synced) <ExternalLink size={10} />
                                             </a>
+                                        ) : selectedFolder ? (
+                                            <span className="text-xs text-orange-500 animate-pulse flex items-center gap-1">
+                                                <RefreshCw size={10} className="animate-spin" /> Generating Sheet...
+                                            </span>
                                         ) : (
-                                            <span className="text-xs text-slate-500 italic">Will be created automatically on save</span>
+                                            <span className="text-xs text-slate-500 italic">Select a folder to generate sheet</span>
                                         )}
                                     </div>
                                 </div>
@@ -744,17 +745,11 @@ You can watch your packing video here: {{3}}`}
                     </div>
                 </div>
             </div>
-
-            <div className="flex justify-end pt-4">
-                <button onClick={handleSave} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all">
-                    Save Integration Settings
-                </button>
-            </div>
         </div>
     );
 };
 
-// --- MAIN LAYOUT ---
+// --- MAIN LAYOUT (Preserved) ---
 const AdminPanel: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'packers' | 'billing' | 'settings'>('dashboard');
   const navItems = [
