@@ -39,7 +39,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const awbRef = useRef(''); // Ref for instant access to current AWB
+  const awbRef = useRef(''); 
   const scanTimerRef = useRef<any>(null);
 
   // --- 1. SETUP & HARDWARE ---
@@ -91,6 +91,10 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
   // --- 2. RECORDING LOGIC ---
   const startRecording = () => {
+    // FIX: Capture the AWB *right now* into a local variable. 
+    // This "freezes" the value so it doesn't matter if we clear the global one later.
+    const sessionAwb = awbRef.current; 
+
     if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         const mediaRecorder = new MediaRecorder(stream);
@@ -103,7 +107,8 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
         mediaRecorder.onstop = () => {
             const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-            addToQueue(blob); // <--- CHANGED: Add to queue instead of waiting
+            // FIX: Pass the 'sessionAwb' we froze earlier
+            addToQueue(blob, sessionAwb); 
         };
 
         mediaRecorder.start();
@@ -117,7 +122,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
     }
-    // INSTANT RESET: Don't wait for upload
+    // INSTANT RESET: We can safely wipe this now because startRecording remembered the old value
     setRecording(false);
     setAwb('');
     awbRef.current = '';
@@ -143,21 +148,24 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // --- 3. QUEUE SYSTEM (THE MAGIC) ---
+  // --- 3. QUEUE SYSTEM ---
   
-  const addToQueue = (blob: Blob) => {
-      const currentAwb = awbRef.current || `scan_${Date.now()}`;
+  // FIX: Accept 'recordedAwb' as an argument
+  const addToQueue = (blob: Blob, recordedAwb: string) => {
+      // Fallback only if somehow empty
+      const finalAwb = recordedAwb || `scan_${Date.now()}`;
+      
       const newItem: QueueItem = {
           id: Date.now().toString(),
           blob: blob,
-          awb: currentAwb,
-          filename: `${currentAwb}.webm`,
+          awb: finalAwb,
+          filename: `${finalAwb}.webm`, // Guarantee filename uses the captured AWB
           attempts: 0
       };
       
       setUploadQueue(prev => [...prev, newItem]);
       
-      // Auto-download locally immediately
+      // Auto-download locally
       downloadLocally(blob, newItem.filename);
   };
 
@@ -189,8 +197,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
           } catch (error: any) {
               console.error(error);
               alert(`❌ Upload FAILED for AWB: ${item.awb}\nReason: ${error.message}\n\nPlease try manually uploading the file from your downloads.`);
-              // On error, we currently remove it to prevent blocking the queue.
-              // In a more advanced version, we could move it to a "retry" list.
+              // Remove on error to unblock queue
               setUploadQueue(prev => prev.slice(1));
           } finally {
               setIsProcessing(false);
@@ -201,7 +208,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   }, [uploadQueue, isProcessing, packer.id, packer.organization_id]);
 
 
-  // The Actual Upload Logic (Separated)
+  // The Actual Upload Logic
   const processUpload = async (item: QueueItem) => {
         // 1. Get Token
         const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
@@ -242,7 +249,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   };
 
 
-  // --- 4. UI HANDLERS (Touch, Mobile, etc) ---
+  // --- 4. UI HANDLERS ---
   const handleTouchStart = (e: React.TouchEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
@@ -298,7 +305,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             </div>
         )}
 
-        {/* Processing Indicator (New Feature) */}
+        {/* Processing Indicator */}
         {uploadQueue.length > 0 && (
              <div className="absolute top-4 right-4 z-30 bg-blue-600/90 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-3 backdrop-blur-md animate-pulse">
                 <Loader2 className="animate-spin" size={18} />
