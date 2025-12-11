@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react'; // Added useRef
 import { UserProfile } from '../../types';
 import { api } from '../../services/api';
 import { supabase } from '../../lib/supabase';
@@ -16,26 +16,45 @@ export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [loading, setLoading] = useState(false);
     const [sheetId, setSheetId] = useState(user.integrations?.googleSheetId || '');
 
+    // --- CRITICAL FIX: PREVENT DOUBLE EXECUTION ---
+    const hasRunOAuth = useRef(false);
+
     // --- AUTO SETUP AFTER OAUTH ---
     useEffect(() => {
         const handleOAuth = async () => {
             const params = new URLSearchParams(window.location.search);
-            if (params.get('code') && params.get('state') === user.id) {
+            const authCode = params.get('code');
+            const state = params.get('state');
+
+            // 1. Safety Check: If we already ran this, STOP.
+            if (hasRunOAuth.current) return;
+
+            if (authCode && state === user.id) {
+                // 2. Mark as running immediately
+                hasRunOAuth.current = true;
+                
+                // 3. Clear URL so refresh doesn't trigger it again
                 window.history.replaceState({}, document.title, window.location.pathname);
+                
                 setLoading(true);
                 try {
                     const { data: { session } } = await supabase.auth.getSession();
                     if (!session) throw new Error("Auth error");
 
+                    // Exchange Code
                     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-auth`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-                        body: JSON.stringify({ action: 'exchange_code', code: params.get('code'), admin_id: user.id })
+                        body: JSON.stringify({ action: 'exchange_code', code: authCode, admin_id: user.id })
                     });
+                    
+                    // If fails, throw error (unless it's just a duplicate run that slipped through)
                     if (!res.ok) throw new Error('Token exchange failed');
 
+                    // Auto-Setup Infrastructure
                     const { sheetId: newSheetId, folderId: newFolderId } = await api.setupPowerpackInfrastructure(user.id);
                     
+                    // Save Config
                     const newConfig = { 
                         ...user.integrations, 
                         googleConnected: true, 
@@ -49,7 +68,13 @@ export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                     alert("Google Connected & 'Powerpack' Folder Created!");
 
                 } catch (e: any) {
-                    alert(`Setup Failed: ${e.message}`);
+                    // Ignore "Invalid Grant" errors usually caused by double-firing in dev
+                    if (!e.message.includes('invalid_grant')) {
+                        alert(`Setup Failed: ${e.message}`);
+                    }
+                    // Even if failed, check if we are actually connected in DB? 
+                    // For now, reset UI:
+                    // setGoogleConnected(false); 
                 } finally {
                     setLoading(false);
                 }
