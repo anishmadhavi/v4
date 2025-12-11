@@ -5,7 +5,7 @@ import { api } from '../services/api';
 import { 
   LayoutDashboard, Users, CreditCard, Settings, LogOut, 
   Plus, Video, Trash2, Key, ExternalLink, Copy, HelpCircle,
-  Folder, FileSpreadsheet, Check, Clock, Save, Link2Off, RefreshCw
+  Folder, FileSpreadsheet, Check, Clock, Save, Link2Off, RefreshCw, AlertCircle
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
@@ -42,7 +42,6 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     value: 1
   }));
 
-  // NEW: Quick Link to Sheet
   const sheetId = user.integrations?.googleSheetId;
 
   return (
@@ -151,7 +150,7 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   );
 };
 
-// --- PACKERS TAB (Preserved) ---
+// --- PACKERS TAB ---
 const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   const [packers, setPackers] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -340,7 +339,7 @@ const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   );
 };
 
-// --- BILLING TAB (Preserved) ---
+// --- BILLING TAB ---
 const BillingTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [amount, setAmount] = useState(500); 
     const [requests, setRequests] = useState<CreditRequest[]>([]);
@@ -393,7 +392,7 @@ const BillingTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     );
 };
 
-// --- SETTINGS TAB (UPDATED UI) ---
+// --- SETTINGS TAB (UPDATED) ---
 const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     // 1. Website State
     const [platform, setPlatform] = useState(user.integrations?.ecommercePlatform || 'None');
@@ -410,6 +409,7 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [selectedFolder, setSelectedFolder] = useState(user.integrations?.googleFolderId || '');
     const [sheetId, setSheetId] = useState(user.integrations?.googleSheetId || '');
     const [loading, setLoading] = useState(false);
+    const [sheetError, setSheetError] = useState('');
 
     // --- GOOGLE OAUTH LISTENER ---
     useEffect(() => {
@@ -458,13 +458,22 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
         handleOAuthRedirect();
     }, [user.id]);
 
-    // --- AUTO-CREATE SHEET LOGIC ---
+    // Load Folders on Mount
+    useEffect(() => {
+        if (googleConnected && driveFolders.length === 0) {
+            api.getDriveFolders().then(setDriveFolders).catch(console.error);
+        }
+    }, [googleConnected]);
+
+    // --- AUTO-CREATE SHEET LOGIC (FIXED) ---
     useEffect(() => {
         const autoSetupSheet = async () => {
-            // Only if connected, folder selected, but NO sheet yet
             if (googleConnected && selectedFolder && !sheetId) {
                 try {
-                    setLoading(true);
+                    setSheetError('');
+                    // Only show loading if we are actually creating a sheet
+                    // We don't want to block UI so we use a separate indicator
+                    
                     console.log("Auto-generating sheet...");
                     const newSheet = await api.createLogSheet(user.id, selectedFolder);
                     setSheetId(newSheet.id);
@@ -477,15 +486,14 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                     };
                     await api.updateIntegrationConfig(user.id, newConfig);
                     
-                } catch (e) {
+                } catch (e: any) {
                     console.error("Sheet creation failed", e);
-                } finally {
-                    setLoading(false);
+                    setSheetError('Failed to generate sheet. Please try re-selecting folder.');
                 }
             }
         };
 
-        if (selectedFolder && selectedFolder !== 'create_new') {
+        if (selectedFolder) {
             autoSetupSheet();
         }
     }, [selectedFolder, googleConnected, sheetId, user.id]);
@@ -522,24 +530,10 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
     const handleFolderChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
         const val = e.target.value;
-        if (val === 'create_new') {
-            const name = prompt("Enter new folder name:", "VideoVerify Proofs");
-            if (name) {
-                try {
-                    const newF = await api.createDriveFolder(name);
-                    setDriveFolders([...driveFolders, newF]);
-                    setSelectedFolder(newF.id);
-                    // Trigger save implicitly for folder
-                    const config = { ...user.integrations, googleFolderId: newF.id };
-                    await api.updateIntegrationConfig(user.id, config);
-                } catch(e) { alert("Folder creation failed"); }
-            }
-        } else {
-            setSelectedFolder(val);
-             // Trigger save implicitly
-             const config = { ...user.integrations, googleFolderId: val };
-             await api.updateIntegrationConfig(user.id, config);
-        }
+        setSelectedFolder(val);
+        // Trigger save implicitly
+        const config = { ...user.integrations, googleFolderId: val };
+        await api.updateIntegrationConfig(user.id, config);
     };
 
     const copyTemplate = () => {
@@ -606,7 +600,8 @@ You can watch your packing video here: {{3}}`;
                                     onChange={(e) => setFulfillmentDelay(Number(e.target.value))}
                                     className="w-full border rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-blue-500 outline-none pl-9"
                                 >
-                                    <option value={1}>1 Minutes</option>
+                                    <option value={0}>Immediate (0 min)</option>
+                                    <option value={5}>5 Minutes</option>
                                     <option value={15}>15 Minutes</option>
                                     <option value={30}>30 Minutes</option>
                                     <option value={60}>1 Hour</option>
@@ -620,7 +615,6 @@ You can watch your packing video here: {{3}}`;
 
                     {platform !== 'None' && (
                         <div className="bg-slate-50 p-4 rounded-lg space-y-4 border border-slate-200">
-                            {/* ... Fields preserved from previous version ... */}
                              {platform === 'Shopify' && (
                                 <>
                                     <div><label className="block text-xs font-medium text-slate-500">Shop Domain</label>
@@ -718,28 +712,36 @@ You can watch your packing video here: {{3}}`;
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Video Storage Folder</label>
                                     <select value={selectedFolder} onChange={handleFolderChange} className="w-full border rounded-lg p-2 bg-white">
                                         <option value="">Select Folder</option>
-                                        <option value="create_new">+ Create New Folder</option>
                                         {driveFolders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
                                     </select>
                                 </div>
 
                                 {/* AUTO-GENERATED SHEET STATUS */}
                                 <div className="flex items-center gap-3 pt-2">
-                                    <FileSpreadsheet className={sheetId ? "text-green-600" : "text-slate-400"} size={20} />
-                                    <div className="flex-1">
-                                        <div className="text-sm font-medium text-slate-800">Fulfillment Log Sheet</div>
-                                        {sheetId ? (
-                                            <a href={`https://docs.google.com/spreadsheets/d/${sheetId}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                                                Powerpack Logs (Auto-synced) <ExternalLink size={10} />
-                                            </a>
-                                        ) : selectedFolder ? (
-                                            <span className="text-xs text-orange-500 animate-pulse flex items-center gap-1">
-                                                <RefreshCw size={10} className="animate-spin" /> Generating Sheet...
-                                            </span>
-                                        ) : (
-                                            <span className="text-xs text-slate-500 italic">Select a folder to generate sheet</span>
-                                        )}
-                                    </div>
+                                    {sheetError ? (
+                                        <div className="text-red-500 flex items-center gap-2 text-sm">
+                                            <AlertCircle size={16} />
+                                            {sheetError}
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <FileSpreadsheet className={sheetId ? "text-green-600" : "text-slate-400"} size={20} />
+                                            <div className="flex-1">
+                                                <div className="text-sm font-medium text-slate-800">Fulfillment Log Sheet</div>
+                                                {sheetId ? (
+                                                    <a href={`https://docs.google.com/spreadsheets/d/${sheetId}`} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                                                        Powerpack Logs (Auto-synced) <ExternalLink size={10} />
+                                                    </a>
+                                                ) : selectedFolder ? (
+                                                    <span className="text-xs text-orange-500 animate-pulse flex items-center gap-1">
+                                                        <RefreshCw size={10} className="animate-spin" /> Generating Sheet...
+                                                    </span>
+                                                ) : (
+                                                    <span className="text-xs text-slate-500 italic">Select a folder to generate sheet</span>
+                                                )}
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -750,7 +752,7 @@ You can watch your packing video here: {{3}}`;
     );
 };
 
-// --- MAIN LAYOUT (Preserved) ---
+// --- MAIN LAYOUT ---
 const AdminPanel: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'packers' | 'billing' | 'settings'>('dashboard');
   const navItems = [
