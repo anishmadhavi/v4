@@ -14,7 +14,9 @@ interface AdminDashboardProps {
   onLogout: () => void;
 }
 
-// --- 1. DASHBOARD TAB ---
+// ==========================================
+// 1. DASHBOARD TAB
+// ==========================================
 const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   const [logs, setLogs] = useState<VideoLog[]>([]);
 
@@ -152,7 +154,9 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   );
 };
 
-// --- 2. PACKERS TAB ---
+// ==========================================
+// 2. PACKERS TAB
+// ==========================================
 const PackersTab: React.FC<{ user: UserProfile }> = ({ user }) => {
   const [packers, setPackers] = useState<any[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -351,12 +355,7 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
             console.error("Backend error during disconnect (forcing local reset):", e);
         }
         
-        // Always reset UI state to allow reconnection
-        setGoogleConnected(false); 
-        setSheetId(''); 
-        
         // Force update DB profile to disconnected via direct Supabase call as fallback
-        // This ensures the user is not stuck "Connected" in DB if the API call failed halfway
         try {
             await supabase.from('profiles').update({ 
                 integrations: { 
@@ -368,6 +367,9 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
             }).eq('id', user.id);
         } catch(e) { console.error("DB update failed", e); }
 
+        // Reset UI
+        setGoogleConnected(false); 
+        setSheetId(''); 
         alert("Disconnected Successfully");
     };
 
@@ -409,17 +411,34 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                 {whatsapp !== 'None' && <div className="mt-4 p-4 bg-slate-50 border rounded-lg space-y-2"><input type="password" placeholder="API Key" className="w-full border p-2 rounded" value={whatsappConfig.apiKey || ''} onChange={e=>setWhatsappConfig({...whatsappConfig, apiKey: e.target.value})} /><input placeholder="Template Name" className="w-full border p-2 rounded" value={whatsappConfig.templateName || ''} onChange={e=>setWhatsappConfig({...whatsappConfig, templateName: e.target.value})} /></div>}
             </div>
 
-            {/* Google Integration (Simplified) */}
+            {/* Google Integration (Simplified & Robust) */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative">
                 <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
                     <div className="flex items-center gap-3"><div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div><h3 className="font-bold text-lg text-slate-800">Google Connect</h3></div>
-                    {googleConnected && <button onClick={handleDisconnect} className="flex items-center gap-2 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50"><Link2Off size={16} /> Disconnect</button>}
+                    
+                    {/* Disconnect Button (Only shows if connected) */}
+                    {googleConnected && (
+                        <button onClick={handleDisconnect} className="flex items-center gap-2 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50">
+                            <Link2Off size={16} /> Disconnect
+                        </button>
+                    )}
                 </div>
 
                 {!googleConnected ? (
-                    <button onClick={() => api.initiateGoogleAuth(user.id)} className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-4 rounded-lg">
-                        <img src="https://www.google.com/favicon.ico" alt="G" className="w-4 h-4" /> Connect Google Account
-                    </button>
+                    <div className="flex flex-col items-start gap-4">
+                        <button onClick={() => api.initiateGoogleAuth(user.id)} className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-4 rounded-lg">
+                            <img src="https://www.google.com/favicon.ico" alt="G" className="w-4 h-4" /> Connect Google Account
+                        </button>
+                        
+                        {/* Force Reset if Stuck */}
+                        <div className="text-xs text-slate-400 flex items-center gap-1 mt-2">
+                            <AlertCircle size={12} /> 
+                            <span>Trouble connecting?</span>
+                            <button onClick={handleDisconnect} className="text-red-500 hover:underline font-bold ml-1">
+                                Force Reset Connection
+                            </button>
+                        </div>
+                    </div>
                 ) : (
                     <div className="space-y-4">
                         <div className="flex items-center gap-2 text-green-600 bg-green-50 p-3 rounded-lg border border-green-100"><Check size={16} /> Connected to Drive</div>
