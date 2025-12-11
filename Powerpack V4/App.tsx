@@ -3,7 +3,7 @@ import { supabase } from './lib/supabase';
 import { api } from './services/api';
 import Login from './components/Login';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
-import AdminPanel from './components/AdminDashboard';
+import AdminPanel from './components/admin-tabs/AdminDashboard';
 import PackerInterface from './components/PackerInterface';
 import MobilePackerInterface from './components/MobilePackerInterface'; // NEW IMPORT
 import { UserProfile, UserRole } from './types';
