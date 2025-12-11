@@ -1,14 +1,52 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, VideoLog, UserRole } from '../types';
 import { api } from '../services/api';
-import { StopCircle, LogOut, Video as VideoIcon, UploadCloud, Keyboard, Search, X, Loader2, AlertTriangle } from 'lucide-react';
+import { StopCircle, LogOut, Video as VideoIcon, UploadCloud, Keyboard, Search, X, Loader2, AlertTriangle, FolderOpen } from 'lucide-react';
 
+// --- INDEXEDDB HELPERS (For Folder Memory) ---
+const DB_NAME = 'PackerSettingsDB';
+const STORE_NAME = 'settings';
+
+const getDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = (e: any) => {
+      e.target.result.createObjectStore(STORE_NAME);
+    };
+    request.onsuccess = (e: any) => resolve(e.target.result);
+    request.onerror = (e) => reject(e);
+  });
+};
+
+const getDirectoryHandle = async (): Promise<FileSystemDirectoryHandle | null> => {
+  try {
+    const db = await getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get('videoSaveDir');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.error("DB Read Error", e);
+    return null;
+  }
+};
+
+const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
+  const db = await getDB();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const store = tx.objectStore(STORE_NAME);
+  store.put(handle, 'videoSaveDir');
+};
+
+// --- TYPES ---
 interface PackerInterfaceProps {
   packer: UserProfile;
   onLogout: () => void;
 }
 
-// Queue Item Type
 interface QueueItem {
   id: string;
   blob: Blob;
@@ -22,7 +60,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   
   // Camera & Recording State
   const [recording, setRecording] = useState(false);
-  const [awb, setAwb] = useState(''); // Current Active AWB
+  const [awb, setAwb] = useState(''); 
   const [manualAwb, setManualAwb] = useState(''); 
   const [isScanning, setIsScanning] = useState(false); 
   const [showMobileInput, setShowMobileInput] = useState(false);
@@ -41,6 +79,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const chunksRef = useRef<Blob[]>([]);
   const awbRef = useRef(''); 
   const scanTimerRef = useRef<any>(null);
+  const lastScanTimeRef = useRef<number>(0); // FIX: Debounce timer
 
   // --- 1. SETUP & HARDWARE ---
   useEffect(() => {
@@ -64,17 +103,8 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     };
     window.addEventListener('keydown', handleKeyDown);
 
-    // Camera Start
-    const startCamera = async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-              video: { facingMode: 'environment' }, 
-              audio: false 
-            });
-            if (videoRef.current) videoRef.current.srcObject = stream;
-        } catch (err) { console.error("Camera error:", err); }
-    };
-    startCamera();
+    // Initial Camera Start
+    startCameraStream();
     
     // Initial Logs Fetch
     api.getLogs(packer.id, UserRole.PACKER).then(data => setLogs(data.slice(0,5))).catch(console.error);
@@ -82,21 +112,60 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     return () => {
         window.removeEventListener('resize', handleResize);
         window.removeEventListener('keydown', handleKeyDown);
-        if (videoRef.current && videoRef.current.srcObject) {
-            (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
-        }
+        stopCameraStream(); // Cleanup on unmount
     };
   }, [scanBuffer, device, packer.id]);
 
 
-  // --- 2. RECORDING LOGIC ---
-  const startRecording = () => {
-    // FIX: Capture the AWB *right now* into a local variable. 
-    // This "freezes" the value so it doesn't matter if we clear the global one later.
+  // --- 2. CAMERA MANAGEMENT ---
+  
+  const startCameraStream = async () => {
+    try {
+        // If stream already exists and is active, don't restart
+        if (videoRef.current && videoRef.current.srcObject) {
+             const currentStream = videoRef.current.srcObject as MediaStream;
+             if(currentStream.active) return;
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment' }, 
+          audio: false 
+        });
+        if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            // Ensure video plays (sometimes needed for Chrome)
+            videoRef.current.play().catch(e => console.log("Play error", e));
+        }
+    } catch (err) { console.error("Camera error:", err); }
+  };
+
+  const stopCameraStream = () => {
+    // FIX 1: Explicitly stop all tracks to kill the browser recording indicator
+    if (videoRef.current && videoRef.current.srcObject) {
+        const stream = videoRef.current.srcObject as MediaStream;
+        stream.getTracks().forEach(track => track.stop());
+        videoRef.current.srcObject = null;
+    }
+  };
+
+
+  // --- 3. RECORDING LOGIC ---
+  const startRecording = async () => {
+    // Ensure camera is running before recording (in case it was stopped)
+    if (!videoRef.current || !videoRef.current.srcObject) {
+        await startCameraStream();
+    }
+
     const sessionAwb = awbRef.current; 
 
     if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
+        
+        // Double check stream is active
+        if(!stream.active) {
+            await startCameraStream();
+        }
+
         const mediaRecorder = new MediaRecorder(stream);
         mediaRecorderRef.current = mediaRecorder;
         chunksRef.current = [];
@@ -107,13 +176,10 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
         mediaRecorder.onstop = () => {
             const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-            // FIX: Pass the 'sessionAwb' we froze earlier
             addToQueue(blob, sessionAwb); 
         };
 
         mediaRecorder.start();
-        setRecording(true);
-    } else {
         setRecording(true);
     }
   };
@@ -122,51 +188,129 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
     }
-    // INSTANT RESET: We can safely wipe this now because startRecording remembered the old value
+    
     setRecording(false);
     setAwb('');
     awbRef.current = '';
+
+    // FIX 1: The user specifically asked to stop recording prompts.
+    // Note: This kills the camera preview. 
+    // If you want the camera to stay ON for the next scan, comment out the line below.
+    // But based on your request "browser is repeatedly asking to stop", we kill it here.
+    stopCameraStream(); 
   };
 
-  const handleScan = (scannedCode: string) => {
+  const handleScan = async (scannedCode: string) => {
     if (!scannedCode) return;
 
+    // FIX 3: Debounce - Ignore duplicates within 2 seconds
+    const now = Date.now();
+    if (now - lastScanTimeRef.current < 2000 && scannedCode === awbRef.current) {
+        console.log("Ignored duplicate scan");
+        return;
+    }
+    lastScanTimeRef.current = now;
+
+    // FIX 3: Double Naming Correction (e.g. ASEN001ASEN001 -> ASEN001)
+    let cleanCode = scannedCode.trim();
+    if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
+        const half = cleanCode.length / 2;
+        const firstHalf = cleanCode.slice(0, half);
+        const secondHalf = cleanCode.slice(half);
+        if (firstHalf === secondHalf) {
+            console.log("Detected double scan text, fixing...");
+            cleanCode = firstHalf;
+        }
+    }
+
     if (!recording) {
-        setAwb(scannedCode);
-        awbRef.current = scannedCode;
+        setAwb(cleanCode);
+        awbRef.current = cleanCode;
         setManualAwb('');
         setShowMobileInput(false);
+        // We must ensure camera is ready before recording starts
+        await startCameraStream();
         startRecording();
     } else {
-        if (scannedCode === awbRef.current) {
+        if (cleanCode === awbRef.current) {
             stopRecording();
         } else {
-            if(confirm(`Current AWB: ${awbRef.current}\nScanned: ${scannedCode}\n\nStop recording?`)) {
+            if(confirm(`Current AWB: ${awbRef.current}\nScanned: ${cleanCode}\n\nStop recording?`)) {
                  stopRecording();
             }
         }
     }
   };
 
-  // --- 3. QUEUE SYSTEM ---
+  // --- 4. QUEUE & SAVING SYSTEM ---
   
-  // FIX: Accept 'recordedAwb' as an argument
   const addToQueue = (blob: Blob, recordedAwb: string) => {
-      // Fallback only if somehow empty
       const finalAwb = recordedAwb || `scan_${Date.now()}`;
       
       const newItem: QueueItem = {
           id: Date.now().toString(),
           blob: blob,
           awb: finalAwb,
-          filename: `${finalAwb}.webm`, // Guarantee filename uses the captured AWB
+          filename: `${finalAwb}.webm`, 
           attempts: 0
       };
       
       setUploadQueue(prev => [...prev, newItem]);
       
-      // Auto-download locally
-      downloadLocally(blob, newItem.filename);
+      // FIX 2: Use intelligent Folder Save
+      saveVideoToFolder(blob, newItem.filename);
+  };
+
+  // FIX 2: Persistent Folder Saving Logic
+  const saveVideoToFolder = async (blob: Blob, filename: string) => {
+    try {
+        // 1. Try to get remembered folder
+        let dirHandle = await getDirectoryHandle();
+
+        if (!dirHandle) {
+            // First time: Ask user
+            try {
+                dirHandle = await window.showDirectoryPicker();
+                await saveDirectoryHandle(dirHandle); // Save to DB
+            } catch (cancelErr) {
+                console.log("User cancelled folder picker, falling back to basic download");
+                downloadLocallyFallback(blob, filename);
+                return;
+            }
+        }
+
+        // 2. Browser Security: Must verify permission on every session/reload
+        if (dirHandle) {
+            const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
+            if (permission !== 'granted') {
+                throw new Error("Permission not granted");
+            }
+            
+            // 3. Save file
+            const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            console.log("Saved to folder successfully");
+        }
+
+    } catch (err) {
+        console.error("Advanced save failed, using fallback:", err);
+        downloadLocallyFallback(blob, filename);
+    }
+  };
+
+  // Fallback if File System API fails or is not supported
+  const downloadLocallyFallback = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
   };
 
   // Queue Processor Effect
@@ -175,14 +319,12 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
           if (isProcessing || uploadQueue.length === 0) return;
 
           setIsProcessing(true);
-          const item = uploadQueue[0]; // Peek first item
+          const item = uploadQueue[0]; 
 
           try {
              await processUpload(item);
-             // Success: Remove from queue
              setUploadQueue(prev => prev.slice(1));
              
-             // Update Logs Display (Optimistic)
              setLogs(prev => [{
                  id: item.id,
                  awb: item.awb,
@@ -196,8 +338,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
           } catch (error: any) {
               console.error(error);
-              alert(`❌ Upload FAILED for AWB: ${item.awb}\nReason: ${error.message}\n\nPlease try manually uploading the file from your downloads.`);
-              // Remove on error to unblock queue
+              alert(`❌ Upload FAILED for AWB: ${item.awb}\nReason: ${error.message}`);
               setUploadQueue(prev => prev.slice(1));
           } finally {
               setIsProcessing(false);
@@ -208,14 +349,11 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   }, [uploadQueue, isProcessing, packer.id, packer.organization_id]);
 
 
-  // The Actual Upload Logic
   const processUpload = async (item: QueueItem) => {
-        // 1. Get Token
         const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
         const { uploadUrl, folderId } = tokenRes;
         if (!uploadUrl) throw new Error("No upload URL received");
 
-        // 2. Upload to Google
         const res = await fetch(uploadUrl, {
             method: 'PUT',
             headers: { 'Content-Type': 'video/webm' },
@@ -224,11 +362,9 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
         if (!res.ok) throw new Error("Google Drive refused the file");
 
-        // 3. Extract File ID
         const googleData = await res.json();
         const realVideoUrl = `https://drive.google.com/file/d/${googleData.id}/view`;
 
-        // 4. Fulfillment
         await api.completeFulfillment({
             awb: item.awb,
             videoUrl: realVideoUrl,
@@ -236,20 +372,8 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         });
   };
 
-  const downloadLocally = (blob: Blob, filename: string) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-  };
 
-
-  // --- 4. UI HANDLERS ---
+  // --- 5. UI HANDLERS ---
   const handleTouchStart = (e: React.TouchEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'BUTTON' || target.tagName === 'INPUT') return;
@@ -271,6 +395,17 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
       if (scanTimerRef.current) { clearTimeout(scanTimerRef.current); scanTimerRef.current = null; }
   };
 
+  // Logic to allow user to reset folder manually
+  const resetFolder = async () => {
+      try {
+          const handle = await window.showDirectoryPicker();
+          await saveDirectoryHandle(handle);
+          alert("Default folder updated successfully!");
+      } catch (e) {
+          // ignore cancel
+      }
+  };
+
   return (
     <div className="min-h-screen bg-black text-white flex flex-col">
       {/* Header */}
@@ -282,7 +417,13 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             </div>
             <div className="text-xs text-slate-400">Packer: {packer.name}</div>
         </div>
-        <button onClick={onLogout} className="text-slate-400 hover:text-white"><LogOut /></button>
+        <div className="flex gap-4">
+             {/* New Button to change folder manually */}
+            <button onClick={resetFolder} className="text-slate-400 hover:text-white" title="Change Save Folder">
+                <FolderOpen size={20} />
+            </button>
+            <button onClick={onLogout} className="text-slate-400 hover:text-white"><LogOut size={20} /></button>
+        </div>
       </div>
 
       {/* Main Viewport */}
@@ -329,8 +470,8 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             {/* Mobile Controls */}
             {device === 'mobile' && !recording && !isScanning && !showMobileInput && (
                 <div className="flex flex-col items-center gap-4 mb-20 pointer-events-auto">
-                     <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
-                        Hold screen to scan
+                      <div className="text-white/70 bg-black/40 px-4 py-2 rounded-full backdrop-blur-sm text-sm animate-bounce">
+                         Hold screen to scan
                     </div>
                     <button 
                         onClick={() => setShowMobileInput(true)}
@@ -366,7 +507,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             {/* Mobile Stop */}
             {device === 'mobile' && recording && (
                 <div className="pointer-events-auto mb-20">
-                     <button 
+                      <button 
                         onClick={(e) => { e.stopPropagation(); stopRecording(); }}
                         className="bg-red-600 hover:bg-red-700 text-white p-6 rounded-full shadow-lg shadow-red-900/50 flex flex-col items-center gap-1 active:scale-95"
                     >
@@ -379,7 +520,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             {/* Desktop UI */}
             {device === 'desktop' && (
                 <div className="mb-10 w-full max-w-md pointer-events-auto flex flex-col gap-4">
-                     <div className="flex gap-2 bg-black/80 p-2 rounded-xl border border-slate-700">
+                      <div className="flex gap-2 bg-black/80 p-2 rounded-xl border border-slate-700">
                         <div className="relative flex-1">
                             <Keyboard className="absolute left-3 top-3 text-slate-400" size={20} />
                             <input 
@@ -408,7 +549,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
                                 <StopCircle size={18} /> Stop
                             </button>
                         )}
-                     </div>
+                      </div>
                 </div>
             )}
         </div>
