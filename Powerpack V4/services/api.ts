@@ -112,60 +112,6 @@ export const api = {
     window.location.href = data.url;
   },
 
-  async getDriveFolders() {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) return [];
-
-    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ action: 'list_folders' })
-    });
-
-    if (!response.ok) return [];
-    const data = await response.json();
-    return data.folders || [];
-  },
-
-  async createDriveFolder(folderName: string) {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) throw new Error("No active session");
-
-    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ action: 'create_folder', name: folderName })
-    });
-
-    if (!response.ok) throw new Error("Failed to create folder");
-    return await response.json(); 
-  },
-
-  // NEW: Automate Sheet Creation
-  async createLogSheet(adminId: string, folderId: string) {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) throw new Error("No active session");
-
-    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ action: 'create_sheet', admin_id: adminId, folder_id: folderId })
-    });
-
-    if (!response.ok) throw new Error("Failed to create sheet");
-    return await response.json(); // returns { id: '...', name: '...' }
-  },
-
-  // NEW: Disconnect Google
   async disconnectGoogle(adminId: string) {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
@@ -183,6 +129,57 @@ export const api = {
     await supabase.from('profiles').update({ 
         integrations: { googleConnected: false, googleFolderId: null, googleSheetId: null } 
     }).eq('id', adminId);
+  },
+
+  // --- NEW: Automated Powerpack Setup ---
+  async setupPowerpackInfrastructure(adminId: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    // 1. List folders to check for "Powerpack"
+    const listRes = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'list_folders' })
+    });
+
+    if (!listRes.ok) throw new Error("Failed to list folders");
+    const listData = await listRes.json();
+    const folders = listData.folders || [];
+    
+    // Find existing folder or create new one
+    let powerpackFolder = folders.find((f: any) => f.name === 'Powerpack');
+
+    if (!powerpackFolder) {
+        const createRes = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+            },
+            body: JSON.stringify({ action: 'create_folder', name: 'Powerpack' })
+        });
+        if (!createRes.ok) throw new Error("Failed to create Powerpack folder");
+        powerpackFolder = await createRes.json();
+    }
+
+    // 2. Create "Powerpack Logs" Sheet inside it
+    const sheetRes = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'create_sheet', admin_id: adminId, folder_id: powerpackFolder.id })
+    });
+
+    if (!sheetRes.ok) throw new Error("Failed to create log sheet");
+    const sheet = await sheetRes.json();
+
+    return { folderId: powerpackFolder.id, sheetId: sheet.id };
   },
 
   // --- Logs & Videos ---
