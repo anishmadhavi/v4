@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useZxing } from 'react-zxing'; // <--- NEW LIBRARY
+import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
-import { FolderOpen, LogOut, Zap, ScanLine } from 'lucide-react';
+import { FolderOpen, LogOut, Zap, ScanLine, Volume2, VolumeX } from 'lucide-react';
 
 // --- INDEXEDDB HELPERS (Preserved) ---
 const DB_NAME = 'PackerSettingsDB';
@@ -37,6 +37,33 @@ const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
   store.put(handle, 'videoSaveDir');
 };
 
+// --- AUDIO ENGINE (NEW) ---
+// This creates a beep mathematically without needing mp3 files
+const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
+    try {
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioContext) return;
+        
+        const ctx = new AudioContext();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, ctx.currentTime);
+        
+        gain.gain.setValueAtTime(0.1, ctx.currentTime); // Volume (0.1 is usually loud enough for beeps)
+        gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start();
+        osc.stop(ctx.currentTime + duration);
+    } catch (e) {
+        console.error("Audio playback failed", e);
+    }
+};
+
 // --- TYPES ---
 interface Props {
   packer: UserProfile;
@@ -56,6 +83,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const [awb, setAwb] = useState(''); 
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [audioEnabled, setAudioEnabled] = useState(false);
 
   // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -66,47 +94,44 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const stableTimerRef = useRef<any>(null);
   const lastSeenCodeRef = useRef<string | null>(null);
 
-  // --- 1. CAMERA & SCANNING LOGIC (UPDATED) ---
+  // --- 1. ENABLE AUDIO ---
+  // We need one user interaction to "unlock" audio context on mobile
+  const enableAudio = () => {
+      playTone(0, 'sine', 0); // Silent dummy sound to unlock
+      setAudioEnabled(true);
+  };
+
+  // --- 2. CAMERA & SCANNING LOGIC ---
   
-  // Triggers when barcode is found in video feed
   const onScanResult = (result: any) => {
-    // IGNORE if we are already recording or in the "Success" state
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
     if (!rawCode) return;
 
-    // A. New Code Found? Reset Timer.
     if (rawCode !== lastSeenCodeRef.current) {
         lastSeenCodeRef.current = rawCode;
-        setStatus('STABILIZING'); // Show visual hint "Keep Steady..."
+        setStatus('STABILIZING'); 
         
         if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
         
-        // Start 1-second timer
+        // 1-Second Stability Check
         stableTimerRef.current = setTimeout(() => {
             confirmScan(rawCode);
-        }, 1000); // <--- 1 SECOND STABILITY CHECK
+        }, 1000); 
     }
-    // B. Same Code? Do nothing, let timer run.
   };
 
-  // Configure the Camera Hook
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    paused: status === 'RECORDING', // Stop scanning to save CPU while recording
+    paused: status === 'RECORDING',
     constraints: {
         audio: false,
-        video: { facingMode: 'environment' } // Use Back Camera
+        video: { facingMode: 'environment' }
     }
   });
 
-  // If scan is lost (camera moves away), reset stability
-  // Note: react-zxing doesn't have an "onLost" easily, but we can reset if needed. 
-  // For now, if they move away, the timer will fire on the OLD code, which is fine, 
-  // or we can add a timeout to clear lastSeenCodeRef if no input for 200ms.
-
-  // --- 2. CORE WORKFLOW ---
+  // --- 3. CORE WORKFLOW ---
 
   const confirmScan = (code: string) => {
       let cleanCode = code.trim();
@@ -121,21 +146,21 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAwb(cleanCode);
       awbRef.current = cleanCode;
 
-      // VISUAL & AUDIO FEEDBACK
-      setStatus('DETECTED');
-      if (navigator.vibrate) navigator.vibrate(200); // Long buzz
-      
-      // Optional: Play BEEP sound here
-      // const audio = new Audio('/beep.mp3'); audio.play();
+      // --- AUDIO FEEDBACK (SUCCESS) ---
+      // High Pitch (1200Hz), Pure Tone
+      playTone(1200, 'sine', 0.15); 
+      // --------------------------------
 
-      // Trigger Recording immediately after detection confirmation
+      setStatus('DETECTED');
+      if (navigator.vibrate) navigator.vibrate(200);
+
+      // Trigger Recording
       setTimeout(() => {
           startRecording();
-      }, 500); // Short delay to let them see "DETECTED"
+      }, 500); 
   };
 
   const startRecording = () => {
-      // We use the SAME video element that react-zxing is using
       if (!videoRef.current || !videoRef.current.srcObject) return;
       
       const stream = videoRef.current.srcObject as MediaStream;
@@ -157,18 +182,22 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   };
 
   const stopRecording = () => {
+      // --- AUDIO FEEDBACK (STOP) ---
+      // Low Pitch (300Hz), Buzzer like
+      playTone(300, 'sawtooth', 0.2);
+      // -----------------------------
+
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           mediaRecorderRef.current.stop();
       }
       
-      // RESET STATE
       setStatus('IDLE');
       setAwb('');
       lastSeenCodeRef.current = null;
       if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
   };
 
-  // --- 3. QUEUE & UPLOAD (Preserved) ---
+  // --- 4. QUEUE & UPLOAD ---
   
   const addToQueue = (blob: Blob, recordedAwb: string) => {
       const filename = `${recordedAwb || 'scan'}.webm`;
@@ -224,8 +253,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       processNext();
   }, [uploadQueue, isProcessing]);
 
-  // --- 4. UI HANDLERS ---
+  // --- 5. UI HANDLERS ---
   const handleFolderSetup = async () => {
+      enableAudio(); // Also enable audio when they set up folder
       try {
           const handle = await window.showDirectoryPicker();
           await saveDirectoryHandle(handle);
@@ -234,7 +264,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-black overflow-hidden flex flex-col">
+    <div className="fixed inset-0 bg-black overflow-hidden flex flex-col" onClick={() => !audioEnabled && enableAudio()}>
         {/* HEADER */}
         <div className="absolute top-0 left-0 right-0 z-20 p-4 flex justify-between items-start bg-gradient-to-b from-black/80 to-transparent">
             <div>
@@ -245,6 +275,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 </div>
             </div>
             <div className="flex gap-4">
+                 {/* AUDIO INDICATOR */}
+                 <div className={`p-2 rounded-full backdrop-blur ${audioEnabled ? 'bg-white/10 text-white' : 'bg-red-500/50 text-white'}`}>
+                    {audioEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
+                 </div>
+
                  <button onClick={handleFolderSetup} className="p-2 bg-white/10 rounded-full text-white backdrop-blur">
                     <FolderOpen size={20} />
                  </button>
@@ -254,7 +289,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED - Managed by react-zxing now */}
+        {/* CAMERA FEED */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
@@ -283,7 +318,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         {/* INTERACTION: RECORDING (Red Slap Zone) */}
         {status === 'RECORDING' && (
             <div 
-                onClick={stopRecording}
+                onClick={(e) => { e.stopPropagation(); stopRecording(); }}
                 className="absolute bottom-0 left-0 w-full h-[70%] bg-red-600/80 z-40 flex flex-col items-center justify-center backdrop-blur-md active:bg-red-700 transition-colors cursor-pointer touch-manipulation"
             >
                 <div className="bg-white/20 p-6 rounded-full animate-pulse">
@@ -299,6 +334,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         {/* IDLE GUIDE */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center">
+                 {!audioEnabled && (
+                     <div className="absolute top-20 bg-red-500 text-white px-4 py-2 rounded-full font-bold animate-pulse z-50">
+                        TAP SCREEN TO ENABLE AUDIO
+                     </div>
+                 )}
                  <div className="w-[80%] h-48 border-2 border-white/30 rounded-lg flex items-center justify-center relative">
                     <p className="absolute -bottom-8 text-white/50 font-bold tracking-wider text-sm">
                         SHOW BARCODE
