@@ -147,6 +147,44 @@ export const api = {
     return await response.json(); 
   },
 
+  // NEW: Automate Sheet Creation
+  async createLogSheet(adminId: string, folderId: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    const response = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'create_sheet', admin_id: adminId, folder_id: folderId })
+    });
+
+    if (!response.ok) throw new Error("Failed to create sheet");
+    return await response.json(); // returns { id: '...', name: '...' }
+  },
+
+  // NEW: Disconnect Google
+  async disconnectGoogle(adminId: string) {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
+
+    await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ action: 'disconnect', admin_id: adminId })
+    });
+    
+    // Clear local profile update
+    await supabase.from('profiles').update({ 
+        integrations: { googleConnected: false, googleFolderId: null, googleSheetId: null } 
+    }).eq('id', adminId);
+  },
+
   // --- Logs & Videos ---
 
   async getLogs(userId: string, role: UserRole): Promise<VideoLog[]> {
@@ -180,12 +218,11 @@ export const api = {
     });
 
     if (!response.ok) {
-        // FIX: Read and throw the actual error message from the backend
         const errText = await response.text();
         throw new Error(`Token Error: ${errText}`);
     }
     
-    return response.json() as Promise<{ uploadUrl: string; folderId?: string; folderName?: string }>; 
+    return response.json() as Promise<{ uploadUrl: string; folderId?: string; folderName?: string; fileId?: string }>; 
   },
 
   // --- FULFILLMENT ---
