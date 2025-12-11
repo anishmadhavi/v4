@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserProfile } from '../types';
 import { LayoutDashboard, Users, CreditCard, Settings, LogOut, Video } from 'lucide-react';
 
-// Import the new split tabs
+// Import your split tabs
 import { DashboardTab } from './admin-tabs/DashboardTab';
 import { PackersTab } from './admin-tabs/PackersTab';
 import { BillingTab } from './admin-tabs/BillingTab';
@@ -16,6 +16,17 @@ interface AdminDashboardProps {
 const AdminPanel: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'packers' | 'billing' | 'settings'>('dashboard');
   
+  // --- NEW: AUTO-SWITCH TAB ON REDIRECT ---
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    // If we see 'code' and 'state' in the URL, user is coming back from Google.
+    // Force switch to 'settings' tab so the handler inside SettingsTab can run.
+    if (params.get('code') && params.get('state')) {
+      setActiveTab('settings');
+    }
+  }, []);
+  // ----------------------------------------
+
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'packers', label: 'Packers', icon: Users },
