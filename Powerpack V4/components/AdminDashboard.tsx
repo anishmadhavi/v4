@@ -290,29 +290,36 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [loading, setLoading] = useState(false);
     const [sheetId, setSheetId] = useState(user.integrations?.googleSheetId || '');
 
-    // --- AUTO SETUP AFTER OAUTH ---
+    // --- CRITICAL OAUTH HANDLER (This was missing logic before) ---
     useEffect(() => {
         const handleOAuth = async () => {
             const params = new URLSearchParams(window.location.search);
-            if (params.get('code') && params.get('state') === user.id) {
+            const authCode = params.get('code');
+            const state = params.get('state');
+
+            // Only run if we have a code AND state matches user ID (security check)
+            if (authCode && state === user.id) {
+                // Clear URL immediately to avoid re-running on refresh
                 window.history.replaceState({}, document.title, window.location.pathname);
                 setLoading(true);
+                
                 try {
                     const { data: { session } } = await supabase.auth.getSession();
-                    if (!session) throw new Error("Auth error");
+                    if (!session) throw new Error("Auth error: Please login again");
 
                     // 1. Exchange Code
                     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-auth`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-                        body: JSON.stringify({ action: 'exchange_code', code: params.get('code'), admin_id: user.id })
+                        body: JSON.stringify({ action: 'exchange_code', code: authCode, admin_id: user.id })
                     });
-                    if (!res.ok) throw new Error('Token exchange failed');
+                    
+                    if (!res.ok) throw new Error('Failed to exchange Google Code');
 
                     // 2. Auto-Setup Powerpack Structure
                     const { sheetId: newSheetId, folderId: newFolderId } = await api.setupPowerpackInfrastructure(user.id);
                     
-                    // 3. Save Config
+                    // 3. Save Final Config
                     const newConfig = { 
                         ...user.integrations, 
                         googleConnected: true, 
@@ -327,6 +334,7 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
                 } catch (e: any) {
                     alert(`Setup Failed: ${e.message}`);
+                    setGoogleConnected(false); // Reset on failure
                 } finally {
                     setLoading(false);
                 }
@@ -343,19 +351,19 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
         try { await api.updateIntegrationConfig(user.id, { ...user.integrations, whatsappProvider: whatsapp, whatsappConfig }); alert('WhatsApp Settings Saved!'); } catch(e: any) { alert(e.message); }
     };
 
-    // --- ROBUST DISCONNECT LOGIC ---
     const handleDisconnect = async () => {
-        if(!confirm("Are you sure you want to disconnect? This will stop video uploads.")) return;
-        
+        if(!confirm("Disconnect Google?")) return;
         try { 
-            // Try backend disconnect
             await api.disconnectGoogle(user.id); 
-        } catch (e) {
-            // Even if backend fails (e.g. token already dead), we MUST clear local state
-            console.error("Backend error during disconnect (forcing local reset):", e);
+        } catch { 
+            console.error("Backend disconnect failed, forcing UI reset"); 
         }
         
-        // Force update DB profile to disconnected via direct Supabase call as fallback
+        // Force Reset UI
+        setGoogleConnected(false); 
+        setSheetId(''); 
+        
+        // Force Reset DB locally just in case
         try {
             await supabase.from('profiles').update({ 
                 integrations: { 
@@ -365,12 +373,9 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                     googleSheetId: null 
                 } 
             }).eq('id', user.id);
-        } catch(e) { console.error("DB update failed", e); }
-
-        // Reset UI
-        setGoogleConnected(false); 
-        setSheetId(''); 
-        alert("Disconnected Successfully");
+        } catch {}
+        
+        alert("Disconnected");
     };
 
     if (loading) return <div className="p-10 text-center text-blue-600 font-bold flex flex-col items-center gap-4"><RefreshCw className="animate-spin" /> Setting up 'Powerpack' Folders...</div>;
@@ -411,12 +416,11 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                 {whatsapp !== 'None' && <div className="mt-4 p-4 bg-slate-50 border rounded-lg space-y-2"><input type="password" placeholder="API Key" className="w-full border p-2 rounded" value={whatsappConfig.apiKey || ''} onChange={e=>setWhatsappConfig({...whatsappConfig, apiKey: e.target.value})} /><input placeholder="Template Name" className="w-full border p-2 rounded" value={whatsappConfig.templateName || ''} onChange={e=>setWhatsappConfig({...whatsappConfig, templateName: e.target.value})} /></div>}
             </div>
 
-            {/* Google Integration (Simplified & Robust) */}
+            {/* Google Integration (Robust) */}
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative">
                 <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
                     <div className="flex items-center gap-3"><div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div><h3 className="font-bold text-lg text-slate-800">Google Connect</h3></div>
                     
-                    {/* Disconnect Button (Only shows if connected) */}
                     {googleConnected && (
                         <button onClick={handleDisconnect} className="flex items-center gap-2 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50">
                             <Link2Off size={16} /> Disconnect
@@ -425,17 +429,17 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
                 </div>
 
                 {!googleConnected ? (
-                    <div className="flex flex-col items-start gap-4">
+                    <div className="flex flex-col items-start gap-3">
                         <button onClick={() => api.initiateGoogleAuth(user.id)} className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-4 rounded-lg">
                             <img src="https://www.google.com/favicon.ico" alt="G" className="w-4 h-4" /> Connect Google Account
                         </button>
                         
-                        {/* Force Reset if Stuck */}
-                        <div className="text-xs text-slate-400 flex items-center gap-1 mt-2">
-                            <AlertCircle size={12} /> 
-                            <span>Trouble connecting?</span>
-                            <button onClick={handleDisconnect} className="text-red-500 hover:underline font-bold ml-1">
-                                Force Reset Connection
+                        {/* FALLBACK RESET BUTTON */}
+                        <div className="text-xs text-slate-400 mt-2 flex items-center gap-1">
+                            <AlertCircle size={12} />
+                            Is the connection stuck? 
+                            <button onClick={handleDisconnect} className="text-red-500 hover:underline font-bold">
+                                Force Reset
                             </button>
                         </div>
                     </div>
