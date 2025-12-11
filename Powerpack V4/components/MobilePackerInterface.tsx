@@ -37,8 +37,7 @@ const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
   store.put(handle, 'videoSaveDir');
 };
 
-// --- AUDIO ENGINE (NEW) ---
-// This creates a beep mathematically without needing mp3 files
+// --- AUDIO ENGINE (LOUD VERSION) ---
 const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
     try {
         const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -48,11 +47,12 @@ const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: 
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
-        osc.type = type;
+        osc.type = type; // 'square' is louder and more piercing than 'sine'
         osc.frequency.setValueAtTime(freq, ctx.currentTime);
         
-        gain.gain.setValueAtTime(0.1, ctx.currentTime); // Volume (0.1 is usually loud enough for beeps)
-        gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+        // VOLUME INCREASED: 1.0 is Max Volume (was 0.1)
+        gain.gain.setValueAtTime(1.0, ctx.currentTime); 
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
 
         osc.connect(gain);
         gain.connect(ctx.destination);
@@ -78,31 +78,27 @@ interface QueueItem {
 }
 
 const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
-  // States
   const [status, setStatus] = useState<'IDLE' | 'STABILIZING' | 'DETECTED' | 'RECORDING'>('IDLE');
   const [awb, setAwb] = useState(''); 
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
 
-  // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const awbRef = useRef(''); 
   
-  // Stability Logic Refs
   const stableTimerRef = useRef<any>(null);
   const lastSeenCodeRef = useRef<string | null>(null);
 
   // --- 1. ENABLE AUDIO ---
-  // We need one user interaction to "unlock" audio context on mobile
   const enableAudio = () => {
-      playTone(0, 'sine', 0); // Silent dummy sound to unlock
+      // Plays a silent sound to unlock the browser audio engine
+      playTone(0, 'sine', 0); 
       setAudioEnabled(true);
   };
 
   // --- 2. CAMERA & SCANNING LOGIC ---
-  
   const onScanResult = (result: any) => {
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
@@ -127,12 +123,16 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
     paused: status === 'RECORDING',
     constraints: {
         audio: false,
-        video: { facingMode: 'environment' }
+        video: { 
+            facingMode: 'environment',
+            // Attempt to force highest resolution for better wide detection
+            width: { ideal: 1920 },
+            height: { ideal: 1080 } 
+        }
     }
   });
 
   // --- 3. CORE WORKFLOW ---
-
   const confirmScan = (code: string) => {
       let cleanCode = code.trim();
       // Double naming fix
@@ -146,15 +146,14 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAwb(cleanCode);
       awbRef.current = cleanCode;
 
-      // --- AUDIO FEEDBACK (SUCCESS) ---
-      // High Pitch (1200Hz), Pure Tone
-      playTone(1200, 'sine', 0.15); 
+      // --- LOUD AUDIO FEEDBACK (SUCCESS) ---
+      // 'square' wave cuts through noise. High Pitch (880Hz)
+      playTone(880, 'square', 0.2); 
       // --------------------------------
 
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
 
-      // Trigger Recording
       setTimeout(() => {
           startRecording();
       }, 500); 
@@ -182,9 +181,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   };
 
   const stopRecording = () => {
-      // --- AUDIO FEEDBACK (STOP) ---
-      // Low Pitch (300Hz), Buzzer like
-      playTone(300, 'sawtooth', 0.2);
+      // --- LOUD AUDIO FEEDBACK (STOP) ---
+      // 'sawtooth' is buzzy. Low Pitch (150Hz)
+      playTone(150, 'sawtooth', 0.3);
       // -----------------------------
 
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -198,7 +197,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   };
 
   // --- 4. QUEUE & UPLOAD ---
-  
   const addToQueue = (blob: Blob, recordedAwb: string) => {
       const filename = `${recordedAwb || 'scan'}.webm`;
       saveToLocalFolder(blob, filename);
@@ -255,7 +253,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   // --- 5. UI HANDLERS ---
   const handleFolderSetup = async () => {
-      enableAudio(); // Also enable audio when they set up folder
+      enableAudio(); 
       try {
           const handle = await window.showDirectoryPicker();
           await saveDirectoryHandle(handle);
@@ -275,7 +273,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 </div>
             </div>
             <div className="flex gap-4">
-                 {/* AUDIO INDICATOR */}
                  <div className={`p-2 rounded-full backdrop-blur ${audioEnabled ? 'bg-white/10 text-white' : 'bg-red-500/50 text-white'}`}>
                     {audioEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
                  </div>
@@ -289,61 +286,67 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED */}
+        {/* CAMERA FEED - FULL SCREEN */}
+        {/* object-cover ensures it fills the screen, no black bars */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
         />
 
-        {/* FEEDBACK: STABILIZING (Yellow warning) */}
+        {/* FEEDBACK: STABILIZING */}
         {status === 'STABILIZING' && (
-             <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center">
-                 <div className="w-[80%] h-64 border-4 border-yellow-400 rounded-lg flex flex-col items-center justify-center bg-black/20 backdrop-blur-sm">
-                     <ScanLine className="text-yellow-400 animate-pulse w-16 h-16" />
-                     <p className="text-yellow-400 font-bold text-xl mt-4">HOLD STILL...</p>
-                 </div>
+             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
+                 {/* Visual hint that entire screen is active but detecting something */}
+                 <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
+                 <ScanLine className="text-yellow-400 animate-pulse w-32 h-32 drop-shadow-lg" />
+                 <p className="text-yellow-400 font-black text-2xl mt-4 drop-shadow-md">HOLD STILL...</p>
              </div>
         )}
 
-        {/* FEEDBACK: DETECTED (Success Green) */}
+        {/* FEEDBACK: DETECTED */}
         {status === 'DETECTED' && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-                <div className="bg-green-500 text-white px-8 py-6 rounded-2xl shadow-2xl animate-bounce">
-                    <h2 className="text-3xl font-black tracking-tighter">SCANNED!</h2>
-                    <p className="text-center font-mono text-xl mt-1">{awb}</p>
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-green-500/20 backdrop-blur-sm">
+                <div className="bg-green-600 text-white px-10 py-8 rounded-3xl shadow-2xl animate-bounce">
+                    <h2 className="text-4xl font-black tracking-tighter">SCANNED!</h2>
+                    <p className="text-center font-mono text-xl mt-2">{awb}</p>
                 </div>
             </div>
         )}
 
-        {/* INTERACTION: RECORDING (Red Slap Zone) */}
+        {/* RECORDING MODE (Red Slap Zone) */}
         {status === 'RECORDING' && (
             <div 
                 onClick={(e) => { e.stopPropagation(); stopRecording(); }}
-                className="absolute bottom-0 left-0 w-full h-[70%] bg-red-600/80 z-40 flex flex-col items-center justify-center backdrop-blur-md active:bg-red-700 transition-colors cursor-pointer touch-manipulation"
+                className="absolute bottom-0 left-0 w-full h-[70%] bg-red-600/90 z-40 flex flex-col items-center justify-center backdrop-blur-md active:bg-red-700 transition-colors cursor-pointer touch-manipulation"
             >
-                <div className="bg-white/20 p-6 rounded-full animate-pulse">
-                    <div className="w-6 h-6 bg-white rounded-sm"></div>
+                <div className="bg-white/20 p-8 rounded-full animate-pulse mb-4">
+                    <div className="w-8 h-8 bg-white rounded-sm"></div>
                 </div>
-                <h2 className="text-white font-black text-4xl mt-4 tracking-widest drop-shadow-lg select-none">
+                <h2 className="text-white font-black text-5xl tracking-widest drop-shadow-xl select-none">
                     STOP
                 </h2>
                 <p className="text-white/80 mt-2 font-mono text-xl">{awb}</p>
             </div>
         )}
 
-        {/* IDLE GUIDE */}
+        {/* IDLE GUIDE - FULL SCREEN INDICATOR */}
         {status === 'IDLE' && (
-            <div className="absolute inset-0 pointer-events-none z-10 flex items-center justify-center">
+            <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
-                     <div className="absolute top-20 bg-red-500 text-white px-4 py-2 rounded-full font-bold animate-pulse z-50">
+                     <div className="absolute top-24 bg-red-600 text-white px-6 py-3 rounded-full font-bold animate-bounce z-50 shadow-lg">
                         TAP SCREEN TO ENABLE AUDIO
                      </div>
                  )}
-                 <div className="w-[80%] h-48 border-2 border-white/30 rounded-lg flex items-center justify-center relative">
-                    <p className="absolute -bottom-8 text-white/50 font-bold tracking-wider text-sm">
-                        SHOW BARCODE
-                    </p>
-                 </div>
+                 
+                 {/* Full Screen Scanning Brackets */}
+                 <div className="absolute top-10 left-10 w-16 h-16 border-l-4 border-t-4 border-white/40 rounded-tl-xl"></div>
+                 <div className="absolute top-10 right-10 w-16 h-16 border-r-4 border-t-4 border-white/40 rounded-tr-xl"></div>
+                 <div className="absolute bottom-10 left-10 w-16 h-16 border-l-4 border-b-4 border-white/40 rounded-bl-xl"></div>
+                 <div className="absolute bottom-10 right-10 w-16 h-16 border-r-4 border-b-4 border-white/40 rounded-br-xl"></div>
+
+                 <p className="text-white/50 font-bold tracking-widest text-lg bg-black/20 px-4 py-1 rounded-full backdrop-blur-sm">
+                    SCAN ANYWHERE
+                 </p>
             </div>
         )}
     </div>
