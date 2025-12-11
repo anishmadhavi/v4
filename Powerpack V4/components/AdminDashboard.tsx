@@ -606,6 +606,7 @@ You can watch your packing video here: {{3}}`;
                                     onChange={(e) => setFulfillmentDelay(Number(e.target.value))}
                                     className="w-full border rounded-lg p-2.5 bg-white focus:ring-2 focus:ring-blue-500 outline-none pl-9"
                                 >
+                                    <option value={1}>1 Minutes</option>
                                     <option value={15}>15 Minutes</option>
                                     <option value={30}>30 Minutes</option>
                                     <option value={60}>1 Hour</option>
