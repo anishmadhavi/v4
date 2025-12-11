@@ -79,7 +79,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
   const chunksRef = useRef<Blob[]>([]);
   const awbRef = useRef(''); 
   const scanTimerRef = useRef<any>(null);
-  const lastScanTimeRef = useRef<number>(0); // FIX: Debounce timer
+  const lastScanTimeRef = useRef<number>(0); 
 
   // --- 1. SETUP & HARDWARE ---
   useEffect(() => {
@@ -112,7 +112,7 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     return () => {
         window.removeEventListener('resize', handleResize);
         window.removeEventListener('keydown', handleKeyDown);
-        stopCameraStream(); // Cleanup on unmount
+        stopCameraStream(); 
     };
   }, [scanBuffer, device, packer.id]);
 
@@ -124,23 +124,25 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         // If stream already exists and is active, don't restart
         if (videoRef.current && videoRef.current.srcObject) {
              const currentStream = videoRef.current.srcObject as MediaStream;
-             if(currentStream.active) return;
+             if(currentStream.active && currentStream.getVideoTracks()[0].readyState === 'live') {
+                 return; // Already good to go
+             }
         }
 
         const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { facingMode: 'environment' }, 
           audio: false 
         });
+        
         if (videoRef.current) {
             videoRef.current.srcObject = stream;
-            // Ensure video plays (sometimes needed for Chrome)
-            videoRef.current.play().catch(e => console.log("Play error", e));
+            // Await play to ensure the browser has actually started the pixels flowing
+            await videoRef.current.play().catch(e => console.log("Play error (expected if backgrounded)", e));
         }
     } catch (err) { console.error("Camera error:", err); }
   };
 
   const stopCameraStream = () => {
-    // FIX 1: Explicitly stop all tracks to kill the browser recording indicator
     if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
@@ -150,22 +152,26 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
 
   // --- 3. RECORDING LOGIC ---
+  
+  // FIX: Make this robust. It now ensures camera is ready before recording.
   const startRecording = async () => {
-    // Ensure camera is running before recording (in case it was stopped)
+    // 1. Ensure camera is running. If not, start it and WAIT.
     if (!videoRef.current || !videoRef.current.srcObject) {
+        console.log("Camera was cold, starting now...");
         await startCameraStream();
+    }
+    
+    // 2. Double check: Is the stream active?
+    const stream = videoRef.current?.srcObject as MediaStream;
+    if (!stream || !stream.active) {
+        console.error("Camera failed to start, cannot record.");
+        return;
     }
 
     const sessionAwb = awbRef.current; 
 
-    if (videoRef.current && videoRef.current.srcObject) {
-        const stream = videoRef.current.srcObject as MediaStream;
-        
-        // Double check stream is active
-        if(!stream.active) {
-            await startCameraStream();
-        }
-
+    // 3. Initialize Recorder
+    try {
         const mediaRecorder = new MediaRecorder(stream);
         mediaRecorderRef.current = mediaRecorder;
         chunksRef.current = [];
@@ -181,6 +187,9 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
 
         mediaRecorder.start();
         setRecording(true);
+        console.log("Recording started for:", sessionAwb);
+    } catch (e) {
+        console.error("MediaRecorder failed to start", e);
     }
   };
 
@@ -193,32 +202,27 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     setAwb('');
     awbRef.current = '';
 
-    // FIX 1: The user specifically asked to stop recording prompts.
-    // Note: This kills the camera preview. 
-    // If you want the camera to stay ON for the next scan, comment out the line below.
-    // But based on your request "browser is repeatedly asking to stop", we kill it here.
+    // Stop camera to prevent browser "Recording" icon persistence
     stopCameraStream(); 
   };
 
   const handleScan = async (scannedCode: string) => {
     if (!scannedCode) return;
 
-    // FIX 3: Debounce - Ignore duplicates within 2 seconds
+    // Debounce
     const now = Date.now();
     if (now - lastScanTimeRef.current < 2000 && scannedCode === awbRef.current) {
-        console.log("Ignored duplicate scan");
         return;
     }
     lastScanTimeRef.current = now;
 
-    // FIX 3: Double Naming Correction (e.g. ASEN001ASEN001 -> ASEN001)
+    // Double Naming Fix
     let cleanCode = scannedCode.trim();
     if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
         const half = cleanCode.length / 2;
         const firstHalf = cleanCode.slice(0, half);
         const secondHalf = cleanCode.slice(half);
         if (firstHalf === secondHalf) {
-            console.log("Detected double scan text, fixing...");
             cleanCode = firstHalf;
         }
     }
@@ -228,9 +232,9 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
         awbRef.current = cleanCode;
         setManualAwb('');
         setShowMobileInput(false);
-        // We must ensure camera is ready before recording starts
-        await startCameraStream();
-        startRecording();
+        
+        // FIX: Await the start process so we don't miss the first scan
+        await startRecording();
     } else {
         if (cleanCode === awbRef.current) {
             stopRecording();
@@ -256,37 +260,29 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
       };
       
       setUploadQueue(prev => [...prev, newItem]);
-      
-      // FIX 2: Use intelligent Folder Save
       saveVideoToFolder(blob, newItem.filename);
   };
 
-  // FIX 2: Persistent Folder Saving Logic
   const saveVideoToFolder = async (blob: Blob, filename: string) => {
     try {
-        // 1. Try to get remembered folder
         let dirHandle = await getDirectoryHandle();
 
         if (!dirHandle) {
-            // First time: Ask user
             try {
                 dirHandle = await window.showDirectoryPicker();
-                await saveDirectoryHandle(dirHandle); // Save to DB
+                await saveDirectoryHandle(dirHandle); 
             } catch (cancelErr) {
-                console.log("User cancelled folder picker, falling back to basic download");
                 downloadLocallyFallback(blob, filename);
                 return;
             }
         }
 
-        // 2. Browser Security: Must verify permission on every session/reload
         if (dirHandle) {
             const permission = await dirHandle.requestPermission({ mode: 'readwrite' });
             if (permission !== 'granted') {
                 throw new Error("Permission not granted");
             }
             
-            // 3. Save file
             const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
             const writable = await fileHandle.createWritable();
             await writable.write(blob);
@@ -300,7 +296,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
     }
   };
 
-  // Fallback if File System API fails or is not supported
   const downloadLocallyFallback = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -395,7 +390,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
       if (scanTimerRef.current) { clearTimeout(scanTimerRef.current); scanTimerRef.current = null; }
   };
 
-  // Logic to allow user to reset folder manually
   const resetFolder = async () => {
       try {
           const handle = await window.showDirectoryPicker();
@@ -418,7 +412,6 @@ const PackerInterface: React.FC<PackerInterfaceProps> = ({ packer, onLogout }) =
             <div className="text-xs text-slate-400">Packer: {packer.name}</div>
         </div>
         <div className="flex gap-4">
-             {/* New Button to change folder manually */}
             <button onClick={resetFolder} className="text-slate-400 hover:text-white" title="Change Save Folder">
                 <FolderOpen size={20} />
             </button>
