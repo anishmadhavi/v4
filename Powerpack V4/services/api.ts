@@ -131,22 +131,29 @@ export const api = {
     }).eq('id', adminId);
   },
 
+  // ... inside api object ...
+
   // --- NEW: Automated Powerpack Setup ---
   async setupPowerpackInfrastructure(adminId: string) {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
 
-    // 1. List folders to check for "Powerpack"
+    // 1. List folders (Explicitly passing admin_id)
     const listRes = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({ action: 'list_folders' })
+        // PASS admin_id HERE to ensure backend finds the right tokens
+        body: JSON.stringify({ action: 'list_folders', admin_id: adminId }) 
     });
 
-    if (!listRes.ok) throw new Error("Failed to list folders");
+    if (!listRes.ok) {
+        const err = await listRes.json();
+        throw new Error(err.error || "Failed to list folders");
+    }
+    
     const listData = await listRes.json();
     const folders = listData.folders || [];
     
@@ -160,9 +167,13 @@ export const api = {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${session.access_token}`
             },
-            body: JSON.stringify({ action: 'create_folder', name: 'Powerpack' })
+            body: JSON.stringify({ action: 'create_folder', name: 'Powerpack', admin_id: adminId })
         });
-        if (!createRes.ok) throw new Error("Failed to create Powerpack folder");
+        
+        if (!createRes.ok) {
+             const err = await createRes.json();
+             throw new Error(err.error || "Failed to create Powerpack folder");
+        }
         powerpackFolder = await createRes.json();
     }
 
@@ -176,7 +187,10 @@ export const api = {
         body: JSON.stringify({ action: 'create_sheet', admin_id: adminId, folder_id: powerpackFolder.id })
     });
 
-    if (!sheetRes.ok) throw new Error("Failed to create log sheet");
+    if (!sheetRes.ok) {
+        const err = await sheetRes.json();
+        throw new Error(err.error || "Failed to create log sheet");
+    }
     const sheet = await sheetRes.json();
 
     return { folderId: powerpackFolder.id, sheetId: sheet.id };
