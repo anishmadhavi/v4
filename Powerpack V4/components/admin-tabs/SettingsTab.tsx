@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react'; // Added useRef
+import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile } from '../../types';
 import { api } from '../../services/api';
 import { supabase } from '../../lib/supabase';
-import { LayoutDashboard, Users, Folder, Save, Link2Off, RefreshCw, AlertCircle, FileSpreadsheet, Check, Clock } from 'lucide-react';
+import { LayoutDashboard, Users, Folder, Save, Link2Off, RefreshCw, AlertCircle, FileSpreadsheet, Check } from 'lucide-react';
 
 export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [platform, setPlatform] = useState(user.integrations?.ecommercePlatform || 'None');
@@ -16,45 +16,42 @@ export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [loading, setLoading] = useState(false);
     const [sheetId, setSheetId] = useState(user.integrations?.googleSheetId || '');
 
-    // --- CRITICAL FIX: PREVENT DOUBLE EXECUTION ---
+    // --- GUARD AGAINST DOUBLE EXECUTION ---
     const hasRunOAuth = useRef(false);
 
-    // --- AUTO SETUP AFTER OAUTH ---
     useEffect(() => {
         const handleOAuth = async () => {
             const params = new URLSearchParams(window.location.search);
             const authCode = params.get('code');
             const state = params.get('state');
 
-            // 1. Safety Check: If we already ran this, STOP.
+            // Prevent double-fire in Strict Mode
             if (hasRunOAuth.current) return;
 
             if (authCode && state === user.id) {
-                // 2. Mark as running immediately
-                hasRunOAuth.current = true;
+                hasRunOAuth.current = true; // Lock it immediately
                 
-                // 3. Clear URL so refresh doesn't trigger it again
+                // Clear URL so refreshing doesn't re-trigger
                 window.history.replaceState({}, document.title, window.location.pathname);
                 
                 setLoading(true);
                 try {
                     const { data: { session } } = await supabase.auth.getSession();
-                    if (!session) throw new Error("Auth error");
+                    if (!session) throw new Error("Session expired. Please login again.");
 
-                    // Exchange Code
+                    // 1. Exchange Code for Tokens
                     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/google-auth`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
                         body: JSON.stringify({ action: 'exchange_code', code: authCode, admin_id: user.id })
                     });
                     
-                    // If fails, throw error (unless it's just a duplicate run that slipped through)
-                    if (!res.ok) throw new Error('Token exchange failed');
+                    if (!res.ok) throw new Error('Google Token Exchange Failed');
 
-                    // Auto-Setup Infrastructure
+                    // 2. Auto-Setup Folder & Sheet
                     const { sheetId: newSheetId, folderId: newFolderId } = await api.setupPowerpackInfrastructure(user.id);
                     
-                    // Save Config
+                    // 3. Update User Config
                     const newConfig = { 
                         ...user.integrations, 
                         googleConnected: true, 
@@ -65,16 +62,14 @@ export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
                     setGoogleConnected(true);
                     setSheetId(newSheetId);
-                    alert("Google Connected & 'Powerpack' Folder Created!");
+                    alert("Google Connected & 'Powerpack' Folder Created Successfully!");
 
                 } catch (e: any) {
-                    // Ignore "Invalid Grant" errors usually caused by double-firing in dev
+                    console.error(e);
+                    // Only show alert if it's a real error, not a duplicate request
                     if (!e.message.includes('invalid_grant')) {
-                        alert(`Setup Failed: ${e.message}`);
+                        alert(`Connection Failed: ${e.message}`);
                     }
-                    // Even if failed, check if we are actually connected in DB? 
-                    // For now, reset UI:
-                    // setGoogleConnected(false); 
                 } finally {
                     setLoading(false);
                 }
@@ -92,14 +87,20 @@ export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     };
 
     const handleDisconnect = async () => {
-        if(!confirm("Disconnect Google?")) return;
+        if(!confirm("Are you sure? This will stop video uploads.")) return;
         try { await api.disconnectGoogle(user.id); } catch {}
-        setGoogleConnected(false); setSheetId(''); 
+        
+        // Force Reset UI regardless of backend success
+        setGoogleConnected(false); 
+        setSheetId(''); 
+        
+        // Force DB Update
         try {
             await supabase.from('profiles').update({ 
                 integrations: { ...user.integrations, googleConnected: false, googleFolderId: null, googleSheetId: null } 
             }).eq('id', user.id);
         } catch {}
+        
         alert("Disconnected");
     };
 
