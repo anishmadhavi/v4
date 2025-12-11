@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
 import { UserProfile, UserRole, VideoLog, CreditRequest } from '../types';
 import { api } from '../services/api';
+import { supabase } from '../lib/supabase';
 import { 
   LayoutDashboard, Users, CreditCard, Settings, LogOut, 
-  Plus, Video, Trash2, Key, ExternalLink, Copy, HelpCircle,
+  Plus, Video, Trash2, Key, ExternalLink,
   Folder, FileSpreadsheet, Check, Clock, Save, Link2Off, RefreshCw, AlertCircle
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
@@ -32,7 +32,7 @@ const DashboardTab: React.FC<{ user: UserProfile }> = ({ user }) => {
 
   const stats = {
     total: logs.length,
-    failed: logs.filter(l => l.whatsapp_status === 'failed').length,
+    failed: logs.filter(l => l.whatsapp_status === 'Failed').length,
     creditsUsed: logs.length, 
     pending: logs.filter(l => l.whatsapp_status === 'Pending').length
   };
@@ -339,9 +339,36 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
         try { await api.updateIntegrationConfig(user.id, { ...user.integrations, whatsappProvider: whatsapp, whatsappConfig }); alert('WhatsApp Settings Saved!'); } catch(e: any) { alert(e.message); }
     };
 
+    // --- ROBUST DISCONNECT LOGIC ---
     const handleDisconnect = async () => {
-        if(!confirm("Disconnect Google?")) return;
-        try { await api.disconnectGoogle(user.id); setGoogleConnected(false); setSheetId(''); alert("Disconnected"); } catch { alert("Failed"); }
+        if(!confirm("Are you sure you want to disconnect? This will stop video uploads.")) return;
+        
+        try { 
+            // Try backend disconnect
+            await api.disconnectGoogle(user.id); 
+        } catch (e) {
+            // Even if backend fails (e.g. token already dead), we MUST clear local state
+            console.error("Backend error during disconnect (forcing local reset):", e);
+        }
+        
+        // Always reset UI state to allow reconnection
+        setGoogleConnected(false); 
+        setSheetId(''); 
+        
+        // Force update DB profile to disconnected via direct Supabase call as fallback
+        // This ensures the user is not stuck "Connected" in DB if the API call failed halfway
+        try {
+            await supabase.from('profiles').update({ 
+                integrations: { 
+                    ...user.integrations,
+                    googleConnected: false, 
+                    googleFolderId: null, 
+                    googleSheetId: null 
+                } 
+            }).eq('id', user.id);
+        } catch(e) { console.error("DB update failed", e); }
+
+        alert("Disconnected Successfully");
     };
 
     if (loading) return <div className="p-10 text-center text-blue-600 font-bold flex flex-col items-center gap-4"><RefreshCw className="animate-spin" /> Setting up 'Powerpack' Folders...</div>;
@@ -386,7 +413,7 @@ const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
             <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative">
                 <div className="flex items-center justify-between mb-6 border-b border-slate-100 pb-4">
                     <div className="flex items-center gap-3"><div className="bg-orange-100 p-2 rounded-lg text-orange-600"><Folder size={20} /></div><h3 className="font-bold text-lg text-slate-800">Google Connect</h3></div>
-                    {googleConnected && <button onClick={handleDisconnect} className="flex items-center gap-2 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-bold"><Link2Off size={16} /> Disconnect</button>}
+                    {googleConnected && <button onClick={handleDisconnect} className="flex items-center gap-2 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-bold hover:bg-red-50"><Link2Off size={16} /> Disconnect</button>}
                 </div>
 
                 {!googleConnected ? (
