@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
+// --- NEW IMPORT: Ensure this points to your Supabase client ---
+import { supabase } from '../lib/supabase'; 
 import { FolderOpen, LogOut, Zap, ScanLine, Volume2, VolumeX } from 'lucide-react';
 
 // --- INDEXEDDB HELPERS (Preserved) ---
@@ -47,10 +49,9 @@ const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: 
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
-        osc.type = type; // 'square' is louder and more piercing than 'sine'
+        osc.type = type; 
         osc.frequency.setValueAtTime(freq, ctx.currentTime);
         
-        // VOLUME INCREASED: 1.0 is Max Volume (was 0.1)
         gain.gain.setValueAtTime(1.0, ctx.currentTime); 
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
 
@@ -93,9 +94,27 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   // --- 1. ENABLE AUDIO ---
   const enableAudio = () => {
-      // Plays a silent sound to unlock the browser audio engine
       playTone(0, 'sine', 0); 
       setAudioEnabled(true);
+  };
+
+  // --- NEW: STEP 1 - LOG SCAN START ---
+  const logScanStart = async (scannedAwb: string) => {
+      try {
+          console.log('Step 1: Logging Scan Start for', scannedAwb);
+          // Fire and forget - don't await strictly to keep UI snappy
+          supabase.functions.invoke('fulfillment', {
+              body: {
+                  action: 'scan_start',
+                  awb: scannedAwb,
+                  timestamp: new Date().toISOString(),
+              },
+          }).then(({ error }) => {
+              if (error) console.error("Step 1 Error:", error);
+          });
+      } catch (err) {
+          console.error('Failed to log scan start:', err);
+      }
   };
 
   // --- 2. CAMERA & SCANNING LOGIC ---
@@ -125,7 +144,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         audio: false,
         video: { 
             facingMode: 'environment',
-            // Attempt to force highest resolution for better wide detection
             width: { ideal: 1920 },
             height: { ideal: 1080 } 
         }
@@ -146,8 +164,10 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAwb(cleanCode);
       awbRef.current = cleanCode;
 
+      // --- TRIGGER STEP 1 HERE ---
+      logScanStart(cleanCode);
+
       // --- LOUD AUDIO FEEDBACK (SUCCESS) ---
-      // 'square' wave cuts through noise. High Pitch (880Hz)
       playTone(880, 'square', 0.2); 
       // --------------------------------
 
@@ -182,7 +202,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const stopRecording = () => {
       // --- LOUD AUDIO FEEDBACK (STOP) ---
-      // 'sawtooth' is buzzy. Low Pitch (150Hz)
       playTone(150, 'sawtooth', 0.3);
       // -----------------------------
 
@@ -222,6 +241,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       } catch (err) { console.error("Local save error", err); }
   };
 
+  // --- MODIFIED: STEP 2 - COMPLETION LOGIC ---
   useEffect(() => {
       const processNext = async () => {
           if (isProcessing || uploadQueue.length === 0) return;
@@ -229,20 +249,37 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           const item = uploadQueue[0];
 
           try {
+              // 1. Upload Video to Drive (Keep existing logic)
               const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
               await fetch(tokenRes.uploadUrl, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'video/webm' },
                   body: item.blob
               });
-              await api.completeFulfillment({
-                  awb: item.awb,
-                  videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
-                  folderId: tokenRes.folderId || ''
+
+              // 2. Construct URL
+              const finalVideoUrl = `https://drive.google.com/file/d/${tokenRes.fileId}/view`;
+
+              // 3. Call Fulfillment Edge Function (Step 2: Update Row)
+              console.log('Step 2: Completing Log for', item.awb);
+              
+              const { error } = await supabase.functions.invoke('fulfillment', {
+                  body: {
+                      action: 'scan_complete',
+                      awb: item.awb,
+                      video_url: finalVideoUrl,
+                      timestamp: new Date().toISOString(),
+                  },
               });
+
+              if (error) throw error;
+
+              // Success - remove from queue
               setUploadQueue(prev => prev.slice(1));
+
           } catch (e) {
-              console.error("Upload failed", e);
+              console.error("Upload/Log failed", e);
+              // Retry logic or skip? For now, skipping to avoid blocking queue
               setUploadQueue(prev => prev.slice(1)); 
           } finally {
               setIsProcessing(false);
@@ -251,7 +288,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       processNext();
   }, [uploadQueue, isProcessing]);
 
-  // --- 5. UI HANDLERS ---
+  // --- 5. UI HANDLERS (Unchanged) ---
   const handleFolderSetup = async () => {
       enableAudio(); 
       try {
@@ -286,8 +323,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED - FULL SCREEN */}
-        {/* object-cover ensures it fills the screen, no black bars */}
+        {/* CAMERA FEED */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
@@ -296,7 +332,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         {/* FEEDBACK: STABILIZING */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
-                 {/* Visual hint that entire screen is active but detecting something */}
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
                  <ScanLine className="text-yellow-400 animate-pulse w-32 h-32 drop-shadow-lg" />
                  <p className="text-yellow-400 font-black text-2xl mt-4 drop-shadow-md">HOLD STILL...</p>
@@ -313,7 +348,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* RECORDING MODE (Red Slap Zone) */}
+        {/* RECORDING MODE */}
         {status === 'RECORDING' && (
             <div 
                 onClick={(e) => { e.stopPropagation(); stopRecording(); }}
@@ -329,7 +364,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* IDLE GUIDE - FULL SCREEN INDICATOR */}
+        {/* IDLE GUIDE */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
@@ -337,8 +372,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                         TAP SCREEN TO ENABLE AUDIO
                      </div>
                  )}
-                 
-                 {/* Full Screen Scanning Brackets */}
                  <div className="absolute top-10 left-10 w-16 h-16 border-l-4 border-t-4 border-white/40 rounded-tl-xl"></div>
                  <div className="absolute top-10 right-10 w-16 h-16 border-r-4 border-t-4 border-white/40 rounded-tr-xl"></div>
                  <div className="absolute bottom-10 left-10 w-16 h-16 border-l-4 border-b-4 border-white/40 rounded-bl-xl"></div>
