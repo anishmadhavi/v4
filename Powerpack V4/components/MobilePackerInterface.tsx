@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
-import { LogOut, Zap, ScanLine, Volume2, VolumeX, Download } from 'lucide-react';
+import { LogOut, Zap, ScanLine, Volume2, VolumeX, Download, CheckCircle } from 'lucide-react';
 
 // --- AUDIO ENGINE ---
 const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
@@ -41,6 +41,7 @@ interface QueueItem {
   blob: Blob;
   awb: string;
   filename: string;
+  mimeType: string;
 }
 
 const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
@@ -65,8 +66,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   // --- 2. CAMERA & SCANNING LOGIC ---
   const onScanResult = (result: any) => {
-    // GUARD: This prevents scanning logic while recording, 
-    // without needing to pause the actual camera feed.
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
@@ -86,8 +85,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    // FIX 1: REMOVED 'paused' prop. 
-    // Keeping the camera active ensures the MediaRecorder has a stream to record.
+    // CRITICAL FIX: Do NOT pause the camera. 
+    // This ensures the video feed is alive for the MediaRecorder.
     constraints: {
         audio: false,
         video: { 
@@ -101,6 +100,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 3. CORE WORKFLOW ---
   const confirmScan = (code: string) => {
       let cleanCode = code.trim();
+      // Double naming fix
       if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
         const half = cleanCode.length / 2;
         if (cleanCode.slice(0, half) === cleanCode.slice(half)) {
@@ -124,21 +124,36 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       if (!videoRef.current || !videoRef.current.srcObject) return;
       
       const stream = videoRef.current.srcObject as MediaStream;
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
+      
+      // FIX: Detect correct MIME type for iOS vs Android
+      let mimeType = 'video/webm';
+      if (MediaRecorder.isTypeSupported('video/mp4')) {
+          mimeType = 'video/mp4';
+      } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          mimeType = 'video/webm;codecs=vp9';
+      }
 
-      mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      try {
+          const mediaRecorder = new MediaRecorder(stream, { mimeType });
+          mediaRecorderRef.current = mediaRecorder;
+          chunksRef.current = [];
 
-      mediaRecorder.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-          addToQueue(blob, awbRef.current);
-      };
+          mediaRecorder.ondataavailable = (e) => {
+              if (e.data.size > 0) chunksRef.current.push(e.data);
+          };
 
-      mediaRecorder.start();
-      setStatus('RECORDING');
+          mediaRecorder.onstop = () => {
+              const blob = new Blob(chunksRef.current, { type: mimeType });
+              addToQueue(blob, awbRef.current, mimeType);
+          };
+
+          mediaRecorder.start();
+          setStatus('RECORDING');
+      } catch (e) {
+          console.error("Failed to start MediaRecorder", e);
+          alert("Camera Recording Error: Not supported on this browser.");
+          setStatus('IDLE');
+      }
   };
 
   const stopRecording = () => {
@@ -155,21 +170,26 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   };
 
   // --- 4. QUEUE & UPLOAD ---
-  const addToQueue = (blob: Blob, recordedAwb: string) => {
-      const filename = `${recordedAwb || 'scan'}.webm`;
+  const addToQueue = (blob: Blob, recordedAwb: string, mimeType: string) => {
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const filename = `${recordedAwb || 'scan'}.${ext}`;
       
-      // FIX 2: Mobile Compatible Download
-      forceMobileDownload(blob, filename);
-
+      // 1. Add to Upload Queue FIRST (Priority)
       setUploadQueue(prev => [...prev, {
           id: Date.now().toString(),
           blob,
           awb: recordedAwb,
-          filename
+          filename,
+          mimeType
       }]);
+
+      // 2. Trigger Mobile Download (Delayed to not kill upload)
+      setTimeout(() => {
+          forceMobileDownload(blob, filename);
+      }, 1500);
   };
 
-  // New helper for mobile downloads
+  // Mobile Download Helper
   const forceMobileDownload = (blob: Blob, filename: string) => {
       try {
           const url = window.URL.createObjectURL(blob);
@@ -177,11 +197,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           a.style.display = 'none';
           a.href = url;
           a.download = filename;
-          
           document.body.appendChild(a);
           a.click();
-          
-          // Cleanup
           setTimeout(() => {
               document.body.removeChild(a);
               window.URL.revokeObjectURL(url);
@@ -198,20 +215,26 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           const item = uploadQueue[0];
 
           try {
-              const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
+              // Using item.mimeType to ensure API knows what we are sending
+              const tokenRes = await api.getUploadToken(item.filename, item.mimeType);
+              
               await fetch(tokenRes.uploadUrl, {
                   method: 'PUT',
-                  headers: { 'Content-Type': 'video/webm' },
+                  headers: { 'Content-Type': item.mimeType },
                   body: item.blob
               });
+
               await api.completeFulfillment({
                   awb: item.awb,
                   videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
                   folderId: tokenRes.folderId || ''
               });
+
               setUploadQueue(prev => prev.slice(1));
           } catch (e) {
               console.error("Upload failed", e);
+              // Retry Logic: Keep in queue if network error? 
+              // For now, we remove it to prevent blocking, but you could add a 'retry' status
               setUploadQueue(prev => prev.slice(1)); 
           } finally {
               setIsProcessing(false);
@@ -227,8 +250,12 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             <div>
                 <h1 className="text-white font-bold text-lg drop-shadow-md">{packer.name}</h1>
                 <div className="flex items-center gap-2 text-xs text-white/80">
-                   <Zap size={12} className={status === 'RECORDING' ? 'text-red-500 fill-red-500' : 'text-green-500'} />
-                   {uploadQueue.length === 0 ? 'Queue Empty' : `${uploadQueue.length} Uploading...`}
+                   {/* Queue Indicator */}
+                   {uploadQueue.length === 0 ? (
+                       <span className="flex items-center gap-1 text-green-400"><CheckCircle size={12}/> All Uploaded</span>
+                   ) : (
+                       <span className="flex items-center gap-1 text-yellow-400"><Zap size={12} className="animate-pulse"/> {uploadQueue.length} Pending...</span>
+                   )}
                 </div>
             </div>
             <div className="flex gap-4">
@@ -245,7 +272,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
-            // Ensure playsInline is true for iOS support
             playsInline
             muted 
         />
@@ -269,7 +295,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* RECORDING MODE (Red Slap Zone) */}
+        {/* RECORDING MODE */}
         {status === 'RECORDING' && (
             <div 
                 onClick={(e) => { e.stopPropagation(); stopRecording(); }}
@@ -283,7 +309,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 </h2>
                 <div className="flex items-center gap-2 mt-4 text-white/80">
                     <Download size={16} />
-                    <span className="font-mono text-sm">Auto-Save Active</span>
+                    <span className="font-mono text-sm">Saving to Gallery...</span>
                 </div>
                 <p className="text-white/80 font-mono text-xl mt-1">{awb}</p>
             </div>
