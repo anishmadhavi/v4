@@ -2,42 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
-import { FolderOpen, LogOut, Zap, ScanLine, Volume2, VolumeX } from 'lucide-react';
+import { LogOut, Zap, ScanLine, Volume2, VolumeX, Download } from 'lucide-react';
 
-// --- INDEXEDDB HELPERS (Preserved) ---
-const DB_NAME = 'PackerSettingsDB';
-const STORE_NAME = 'settings';
-
-const getDB = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = (e: any) => e.target.result.createObjectStore(STORE_NAME);
-    request.onsuccess = (e: any) => resolve(e.target.result);
-    request.onerror = (e) => reject(e);
-  });
-};
-
-const getDirectoryHandle = async (): Promise<FileSystemDirectoryHandle | null> => {
-  try {
-    const db = await getDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get('videoSaveDir');
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  } catch (e) { return null; }
-};
-
-const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
-  const db = await getDB();
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  const store = tx.objectStore(STORE_NAME);
-  store.put(handle, 'videoSaveDir');
-};
-
-// --- AUDIO ENGINE (LOUD VERSION) ---
+// --- AUDIO ENGINE ---
 const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
     try {
         const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -47,10 +14,9 @@ const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: 
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
-        osc.type = type; // 'square' is louder and more piercing than 'sine'
+        osc.type = type; 
         osc.frequency.setValueAtTime(freq, ctx.currentTime);
         
-        // VOLUME INCREASED: 1.0 is Max Volume (was 0.1)
         gain.gain.setValueAtTime(1.0, ctx.currentTime); 
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
 
@@ -93,13 +59,14 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   // --- 1. ENABLE AUDIO ---
   const enableAudio = () => {
-      // Plays a silent sound to unlock the browser audio engine
       playTone(0, 'sine', 0); 
       setAudioEnabled(true);
   };
 
   // --- 2. CAMERA & SCANNING LOGIC ---
   const onScanResult = (result: any) => {
+    // GUARD: This prevents scanning logic while recording, 
+    // without needing to pause the actual camera feed.
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
@@ -111,7 +78,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         
         if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
         
-        // 1-Second Stability Check
         stableTimerRef.current = setTimeout(() => {
             confirmScan(rawCode);
         }, 1000); 
@@ -120,12 +86,12 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    paused: status === 'RECORDING',
+    // FIX 1: REMOVED 'paused' prop. 
+    // Keeping the camera active ensures the MediaRecorder has a stream to record.
     constraints: {
         audio: false,
         video: { 
             facingMode: 'environment',
-            // Attempt to force highest resolution for better wide detection
             width: { ideal: 1920 },
             height: { ideal: 1080 } 
         }
@@ -135,7 +101,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 3. CORE WORKFLOW ---
   const confirmScan = (code: string) => {
       let cleanCode = code.trim();
-      // Double naming fix
       if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
         const half = cleanCode.length / 2;
         if (cleanCode.slice(0, half) === cleanCode.slice(half)) {
@@ -146,11 +111,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAwb(cleanCode);
       awbRef.current = cleanCode;
 
-      // --- LOUD AUDIO FEEDBACK (SUCCESS) ---
-      // 'square' wave cuts through noise. High Pitch (880Hz)
       playTone(880, 'square', 0.2); 
-      // --------------------------------
-
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
 
@@ -181,10 +142,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   };
 
   const stopRecording = () => {
-      // --- LOUD AUDIO FEEDBACK (STOP) ---
-      // 'sawtooth' is buzzy. Low Pitch (150Hz)
       playTone(150, 'sawtooth', 0.3);
-      // -----------------------------
 
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           mediaRecorderRef.current.stop();
@@ -199,7 +157,10 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 4. QUEUE & UPLOAD ---
   const addToQueue = (blob: Blob, recordedAwb: string) => {
       const filename = `${recordedAwb || 'scan'}.webm`;
-      saveToLocalFolder(blob, filename);
+      
+      // FIX 2: Mobile Compatible Download
+      forceMobileDownload(blob, filename);
+
       setUploadQueue(prev => [...prev, {
           id: Date.now().toString(),
           blob,
@@ -208,18 +169,26 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }]);
   };
 
-  const saveToLocalFolder = async (blob: Blob, filename: string) => {
+  // New helper for mobile downloads
+  const forceMobileDownload = (blob: Blob, filename: string) => {
       try {
-          let dirHandle = await getDirectoryHandle();
-          if (!dirHandle) return;
-          if ((await dirHandle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
-             if ((await dirHandle.requestPermission({ mode: 'readwrite' })) !== 'granted') return;
-          }
-          const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
-          const writable = await fileHandle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-      } catch (err) { console.error("Local save error", err); }
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.style.display = 'none';
+          a.href = url;
+          a.download = filename;
+          
+          document.body.appendChild(a);
+          a.click();
+          
+          // Cleanup
+          setTimeout(() => {
+              document.body.removeChild(a);
+              window.URL.revokeObjectURL(url);
+          }, 100);
+      } catch (e) {
+          console.error("Download failed", e);
+      }
   };
 
   useEffect(() => {
@@ -251,16 +220,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       processNext();
   }, [uploadQueue, isProcessing]);
 
-  // --- 5. UI HANDLERS ---
-  const handleFolderSetup = async () => {
-      enableAudio(); 
-      try {
-          const handle = await window.showDirectoryPicker();
-          await saveDirectoryHandle(handle);
-          alert("Folder linked!");
-      } catch (e) { console.log(e); }
-  };
-
   return (
     <div className="fixed inset-0 bg-black overflow-hidden flex flex-col" onClick={() => !audioEnabled && enableAudio()}>
         {/* HEADER */}
@@ -276,27 +235,24 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                  <div className={`p-2 rounded-full backdrop-blur ${audioEnabled ? 'bg-white/10 text-white' : 'bg-red-500/50 text-white'}`}>
                     {audioEnabled ? <Volume2 size={20} /> : <VolumeX size={20} />}
                  </div>
-
-                 <button onClick={handleFolderSetup} className="p-2 bg-white/10 rounded-full text-white backdrop-blur">
-                    <FolderOpen size={20} />
-                 </button>
                  <button onClick={onLogout} className="p-2 bg-white/10 rounded-full text-white backdrop-blur">
                     <LogOut size={20} />
                  </button>
             </div>
         </div>
 
-        {/* CAMERA FEED - FULL SCREEN */}
-        {/* object-cover ensures it fills the screen, no black bars */}
+        {/* CAMERA FEED */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
+            // Ensure playsInline is true for iOS support
+            playsInline
+            muted 
         />
 
         {/* FEEDBACK: STABILIZING */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
-                 {/* Visual hint that entire screen is active but detecting something */}
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
                  <ScanLine className="text-yellow-400 animate-pulse w-32 h-32 drop-shadow-lg" />
                  <p className="text-yellow-400 font-black text-2xl mt-4 drop-shadow-md">HOLD STILL...</p>
@@ -325,11 +281,15 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 <h2 className="text-white font-black text-5xl tracking-widest drop-shadow-xl select-none">
                     STOP
                 </h2>
-                <p className="text-white/80 mt-2 font-mono text-xl">{awb}</p>
+                <div className="flex items-center gap-2 mt-4 text-white/80">
+                    <Download size={16} />
+                    <span className="font-mono text-sm">Auto-Save Active</span>
+                </div>
+                <p className="text-white/80 font-mono text-xl mt-1">{awb}</p>
             </div>
         )}
 
-        {/* IDLE GUIDE - FULL SCREEN INDICATOR */}
+        {/* IDLE GUIDE */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
@@ -338,7 +298,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                      </div>
                  )}
                  
-                 {/* Full Screen Scanning Brackets */}
                  <div className="absolute top-10 left-10 w-16 h-16 border-l-4 border-t-4 border-white/40 rounded-tl-xl"></div>
                  <div className="absolute top-10 right-10 w-16 h-16 border-r-4 border-t-4 border-white/40 rounded-tr-xl"></div>
                  <div className="absolute bottom-10 left-10 w-16 h-16 border-l-4 border-b-4 border-white/40 rounded-bl-xl"></div>
