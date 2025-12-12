@@ -42,83 +42,50 @@ interface QueueItem {
   awb: string;
   filename: string;
   mimeType: string;
+  status: 'PENDING' | 'UPLOADING'; // New status for parallel uploads
 }
 
 const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const [status, setStatus] = useState<'IDLE' | 'STABILIZING' | 'DETECTED' | 'RECORDING'>('IDLE');
   const [awb, setAwb] = useState(''); 
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
+  
+  // Changed from isProcessing boolean to a counter for parallel uploads
+  const [activeUploads, setActiveUploads] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
 
-  // Refs for data that doesn't need to trigger re-renders
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const awbRef = useRef(''); 
-  
   const stableTimerRef = useRef<any>(null);
   const lastSeenCodeRef = useRef<string | null>(null);
 
-  // --- 1. ENABLE AUDIO ---
   const enableAudio = () => {
       playTone(0, 'sine', 0); 
       setAudioEnabled(true);
   };
 
-  // --- 2. RECORDING LOGIC (Memoized to prevent scanner lag) ---
-  
-  // Add to Queue Wrapper
-  const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      const filename = `${recordedAwb || 'scan'}.${ext}`;
-      
-      setUploadQueue(prev => [...prev, {
-          id: Date.now().toString(),
-          blob,
-          awb: recordedAwb,
-          filename,
-          mimeType
-      }]);
-  }, []);
-
-  const startRecording = useCallback(() => {
-      // Access the video element from the ref directly in the hook below, 
-      // but here we need to ensure we have the stream.
-      // We'll pass the stream from the hook or look it up if needed.
-      // *Optimization*: We will capture stream in the confirmScan logic.
-  }, []); // Placeholder, actual logic moved inside confirmScan to access videoRef safely
-
-  const stopRecording = useCallback(() => {
-      playTone(150, 'sawtooth', 0.3);
-
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          mediaRecorderRef.current.stop();
-      }
-      
-      // IMMEDIATE RESET for fast scanning
-      setStatus('IDLE');
-      setAwb('');
-      lastSeenCodeRef.current = null;
-      if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
-  }, []);
-
-  // --- 3. SCANNING LOGIC ---
-  
-  // We define this separately to break the dependency cycle
+  // --- 1. RECORDING START (With Bitrate Optimization) ---
   const triggerRecordStart = (videoElement: HTMLVideoElement) => {
       if (!videoElement.srcObject) return;
       
       const stream = videoElement.srcObject as MediaStream;
       
+      // Smart Codec Selection
       let mimeType = 'video/webm';
       if (MediaRecorder.isTypeSupported('video/mp4')) {
-          mimeType = 'video/mp4';
+          mimeType = 'video/mp4'; // iOS Preferred
       } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-          mimeType = 'video/webm;codecs=vp9';
+          mimeType = 'video/webm;codecs=vp9'; // Android High Efficiency
       }
 
       try {
-          const mediaRecorder = new MediaRecorder(stream, { mimeType });
+          const mediaRecorder = new MediaRecorder(stream, { 
+              mimeType,
+              // PERFORMANCE HACK: 2.5 Mbps is HD quality but 5x smaller file size
+              videoBitsPerSecond: 2500000 
+          });
+          
           mediaRecorderRef.current = mediaRecorder;
           chunksRef.current = [];
 
@@ -139,6 +106,33 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }
   };
 
+  // --- 2. QUEUE MANAGEMENT (Parallel Support) ---
+  const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      const filename = `${recordedAwb || 'scan'}.${ext}`;
+      
+      setUploadQueue(prev => [...prev, {
+          id: Date.now().toString(),
+          blob,
+          awb: recordedAwb,
+          filename,
+          mimeType,
+          status: 'PENDING'
+      }]);
+  }, []);
+
+  const stopRecording = useCallback(() => {
+      playTone(150, 'sawtooth', 0.3);
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+      }
+      setStatus('IDLE');
+      setAwb('');
+      lastSeenCodeRef.current = null;
+      if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
+  }, []);
+
+  // --- 3. SCANNING LOGIC ---
   const confirmScan = useCallback((code: string, videoElement: HTMLVideoElement) => {
       let cleanCode = code.trim();
       if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
@@ -158,13 +152,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setTimeout(() => {
           triggerRecordStart(videoElement);
       }, 500); 
-  }, [addToQueue]);
+  }, []);
 
-  // Memoized Scan Handler to prevent re-creation on render
   const onScanResult = useCallback((result: any) => {
-    // If we are recording or already detected, ignore everything.
-    // We check the REF for status if possible, but state is fine here 
-    // because we stop scanning logic via this guard.
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
@@ -176,11 +166,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         
         if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
         
-        // --- UPDATED: 2 SECOND DELAY ---
         stableTimerRef.current = setTimeout(() => {
-            // We need the video element to start recording. 
-            // Since we can't easily access videoRef.current here without triggering deps,
-            // we will find it by ID or assume standard behavior.
             const videoEl = document.querySelector('video'); 
             if (videoEl) confirmScan(rawCode, videoEl);
         }, 2000); 
@@ -193,49 +179,63 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         audio: false,
         video: { 
             facingMode: 'environment',
-            width: { ideal: 1920 },
+            width: { ideal: 1920 }, // Still requesting Full HD
             height: { ideal: 1080 } 
         }
     }
   });
 
-  // --- 4. BACKGROUND UPLOAD QUEUE ---
+  // --- 4. PARALLEL UPLOAD ENGINE (Max 2 Concurrent) ---
   useEffect(() => {
-      const processNext = async () => {
-          if (isProcessing || uploadQueue.length === 0) return;
-          setIsProcessing(true);
-          const item = uploadQueue[0];
+      // Find items that need uploading
+      const pendingItems = uploadQueue.filter(item => item.status === 'PENDING');
+      
+      // If we have pending items AND space in our "upload threads" (Max 2)
+      if (pendingItems.length > 0 && activeUploads < 2) {
+          const itemToUpload = pendingItems[0];
+          
+          // 1. Mark as Uploading immediately so we don't pick it again
+          setUploadQueue(prev => prev.map(i => 
+              i.id === itemToUpload.id ? { ...i, status: 'UPLOADING' } : i
+          ));
+          setActiveUploads(prev => prev + 1);
 
-          try {
-              const tokenRes = await api.getUploadToken(item.filename, item.mimeType);
-              
-              await fetch(tokenRes.uploadUrl, {
-                  method: 'PUT',
-                  headers: { 'Content-Type': item.mimeType },
-                  body: item.blob
-              });
+          // 2. Perform Upload
+          const performUpload = async () => {
+              try {
+                  const tokenRes = await api.getUploadToken(itemToUpload.filename, itemToUpload.mimeType);
+                  
+                  await fetch(tokenRes.uploadUrl, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': itemToUpload.mimeType },
+                      body: itemToUpload.blob
+                  });
 
-              await api.completeFulfillment({
-                  awb: item.awb,
-                  videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
-                  folderId: tokenRes.folderId || ''
-              });
+                  await api.completeFulfillment({
+                      awb: itemToUpload.awb,
+                      videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
+                      folderId: tokenRes.folderId || ''
+                  });
 
-              setUploadQueue(prev => prev.slice(1));
-          } catch (e) {
-              console.error("Upload failed", e);
-              // On error, remove it so it doesn't block the queue forever
-              setUploadQueue(prev => prev.slice(1)); 
-          } finally {
-              setIsProcessing(false);
-          }
-      };
-      processNext();
-  }, [uploadQueue, isProcessing]);
+                  // Success: Remove from queue completely
+                  setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
+              } catch (e) {
+                  console.error("Upload failed", e);
+                  // On error, remove (or you could reset to PENDING to retry)
+                  setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
+              } finally {
+                  // Release the "thread"
+                  setActiveUploads(prev => prev - 1);
+              }
+          };
+          
+          performUpload();
+      }
+  }, [uploadQueue, activeUploads]);
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden flex flex-col" onClick={() => !audioEnabled && enableAudio()}>
-        {/* HEADER - Shows Upload Status independently */}
+        {/* HEADER */}
         <div className="absolute top-0 left-0 right-0 z-20 p-4 flex justify-between items-start bg-gradient-to-b from-black/80 to-transparent">
             <div>
                 <h1 className="text-white font-bold text-lg drop-shadow-md">{packer.name}</h1>
@@ -247,7 +247,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                    ) : (
                        <span className="flex items-center gap-1 text-yellow-400 font-bold">
                            <Loader2 size={12} className="animate-spin"/> 
-                           Uploading {uploadQueue.length} remaining...
+                           {/* Show how many are actively going vs pending */}
+                           Uploading... ({activeUploads} active, {uploadQueue.length - activeUploads} waiting)
                        </span>
                    )}
                 </div>
@@ -262,7 +263,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED - Always Active */}
+        {/* CAMERA FEED */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
@@ -276,7 +277,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
                  <ScanLine className="text-yellow-400 animate-pulse w-32 h-32 drop-shadow-lg" />
                  <p className="text-yellow-400 font-black text-2xl mt-4 drop-shadow-md">HOLD STEADY...</p>
-                 {/* Visual countdown hint */}
                  <div className="w-64 h-2 bg-gray-700 rounded-full mt-2 overflow-hidden">
                     <div className="h-full bg-yellow-400 animate-[width_2s_linear_forwards] w-0"></div>
                  </div>
@@ -307,13 +307,13 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 </h2>
                 <div className="flex items-center gap-2 mt-4 text-white/80">
                     <CloudUpload size={16} />
-                    <span className="font-mono text-sm">Uploads in Background</span>
+                    <span className="font-mono text-sm">Turbo Upload Active</span>
                 </div>
                 <p className="text-white/80 font-mono text-xl mt-1">{awb}</p>
             </div>
         )}
 
-        {/* IDLE GUIDE - "READY" Indicator */}
+        {/* IDLE GUIDE */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
@@ -322,7 +322,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                      </div>
                  )}
                  
-                 {/* VISUAL CUE: READY TO SCAN */}
                  <div className="bg-black/40 backdrop-blur-md px-6 py-2 rounded-full border border-white/20 flex items-center gap-2 mb-8">
                     <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
                     <span className="text-white font-bold tracking-widest text-sm">SCANNER READY</span>
