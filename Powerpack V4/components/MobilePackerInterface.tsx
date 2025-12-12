@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
-import { LogOut, Zap, ScanLine, Volume2, VolumeX, Download, CheckCircle } from 'lucide-react';
+import { LogOut, Zap, ScanLine, Volume2, VolumeX, CheckCircle, CloudUpload } from 'lucide-react';
 
 // --- AUDIO ENGINE ---
 const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
@@ -66,6 +66,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   // --- 2. CAMERA & SCANNING LOGIC ---
   const onScanResult = (result: any) => {
+    // GUARD: Prevents scanning while recording without killing the camera feed
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
@@ -85,8 +86,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    // CRITICAL FIX: Do NOT pause the camera. 
-    // This ensures the video feed is alive for the MediaRecorder.
+    // FIX: Do NOT use the 'paused' prop here. 
+    // This keeps the camera alive so MediaRecorder always has data.
     constraints: {
         audio: false,
         video: { 
@@ -174,7 +175,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
       const filename = `${recordedAwb || 'scan'}.${ext}`;
       
-      // 1. Add to Upload Queue FIRST (Priority)
+      // Strictly Upload Only - No Local Download
       setUploadQueue(prev => [...prev, {
           id: Date.now().toString(),
           blob,
@@ -182,30 +183,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           filename,
           mimeType
       }]);
-
-      // 2. Trigger Mobile Download (Delayed to not kill upload)
-      setTimeout(() => {
-          forceMobileDownload(blob, filename);
-      }, 1500);
-  };
-
-  // Mobile Download Helper
-  const forceMobileDownload = (blob: Blob, filename: string) => {
-      try {
-          const url = window.URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.style.display = 'none';
-          a.href = url;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => {
-              document.body.removeChild(a);
-              window.URL.revokeObjectURL(url);
-          }, 100);
-      } catch (e) {
-          console.error("Download failed", e);
-      }
   };
 
   useEffect(() => {
@@ -215,26 +192,28 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           const item = uploadQueue[0];
 
           try {
-              // Using item.mimeType to ensure API knows what we are sending
+              // Get Secure Upload URL
               const tokenRes = await api.getUploadToken(item.filename, item.mimeType);
               
+              // Upload actual file
               await fetch(tokenRes.uploadUrl, {
                   method: 'PUT',
                   headers: { 'Content-Type': item.mimeType },
                   body: item.blob
               });
 
+              // Mark as complete in backend
               await api.completeFulfillment({
                   awb: item.awb,
                   videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
                   folderId: tokenRes.folderId || ''
               });
 
+              // Success: Remove from queue
               setUploadQueue(prev => prev.slice(1));
           } catch (e) {
               console.error("Upload failed", e);
-              // Retry Logic: Keep in queue if network error? 
-              // For now, we remove it to prevent blocking, but you could add a 'retry' status
+              // Error handling: Remove it for now to prevent blocking
               setUploadQueue(prev => prev.slice(1)); 
           } finally {
               setIsProcessing(false);
@@ -308,8 +287,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                     STOP
                 </h2>
                 <div className="flex items-center gap-2 mt-4 text-white/80">
-                    <Download size={16} />
-                    <span className="font-mono text-sm">Saving to Gallery...</span>
+                    <CloudUpload size={16} />
+                    <span className="font-mono text-sm">Will Auto-Upload</span>
                 </div>
                 <p className="text-white/80 font-mono text-xl mt-1">{awb}</p>
             </div>
