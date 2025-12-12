@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
+import { supabase } from '../lib/supabase';
 import { FolderOpen, LogOut, Zap, ScanLine, Volume2, VolumeX } from 'lucide-react';
 
-// --- INDEXEDDB HELPERS (Preserved) ---
+// --- INDEXEDDB HELPERS ---
 const DB_NAME = 'PackerSettingsDB';
 const STORE_NAME = 'settings';
 
@@ -37,7 +38,7 @@ const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
   store.put(handle, 'videoSaveDir');
 };
 
-// --- AUDIO ENGINE (LOUD VERSION) ---
+// --- AUDIO ENGINE ---
 const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
     try {
         const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -47,10 +48,8 @@ const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: 
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
-        osc.type = type; // 'square' is louder and more piercing than 'sine'
+        osc.type = type; 
         osc.frequency.setValueAtTime(freq, ctx.currentTime);
-        
-        // VOLUME INCREASED: 1.0 is Max Volume (was 0.1)
         gain.gain.setValueAtTime(1.0, ctx.currentTime); 
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
 
@@ -86,16 +85,47 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const awbRef = useRef(''); 
+  const awbRef = useRef('');
+  
+  // Canvas for Text Overlay
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   
   const stableTimerRef = useRef<any>(null);
   const lastSeenCodeRef = useRef<string | null>(null);
 
-  // --- 1. ENABLE AUDIO ---
   const enableAudio = () => {
-      // Plays a silent sound to unlock the browser audio engine
       playTone(0, 'sine', 0); 
       setAudioEnabled(true);
+  };
+
+  // --- HELPER: GET AUTH TOKEN (Fixes Invalid User Token) ---
+  const getAuthHeader = async () => {
+      const { data } = await supabase.auth.getSession();
+      return data.session?.access_token ? `Bearer ${data.session.access_token}` : null;
+  };
+
+  // --- STEP 1: Log Scan Start ---
+  const logScanStart = async (scannedAwb: string) => {
+      console.log('Step 1: Logging Scan Start for', scannedAwb);
+      
+      const token = await getAuthHeader(); // Get Token
+      if (!token) {
+          console.error("No Auth Token. Login session expired?");
+          return;
+      }
+
+      // Fire and forget, but pass headers explicitly
+      supabase.functions.invoke('fulfillment', {
+          body: {
+              action: 'scan_start',
+              awb: scannedAwb,
+              timestamp: new Date().toISOString(),
+          },
+          headers: { Authorization: token } // <--- CRITICAL FIX
+      }).then(({ error }) => {
+          if (error) console.error("Step 1 Error:", error);
+      });
   };
 
   // --- 2. CAMERA & SCANNING LOGIC ---
@@ -111,7 +141,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         
         if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
         
-        // 1-Second Stability Check
         stableTimerRef.current = setTimeout(() => {
             confirmScan(rawCode);
         }, 1000); 
@@ -120,12 +149,10 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    paused: status === 'RECORDING',
     constraints: {
         audio: false,
         video: { 
             facingMode: 'environment',
-            // Attempt to force highest resolution for better wide detection
             width: { ideal: 1920 },
             height: { ideal: 1080 } 
         }
@@ -135,7 +162,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 3. CORE WORKFLOW ---
   const confirmScan = (code: string) => {
       let cleanCode = code.trim();
-      // Double naming fix
       if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
         const half = cleanCode.length / 2;
         if (cleanCode.slice(0, half) === cleanCode.slice(half)) {
@@ -145,11 +171,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
       setAwb(cleanCode);
       awbRef.current = cleanCode;
-
-      // --- LOUD AUDIO FEEDBACK (SUCCESS) ---
-      // 'square' wave cuts through noise. High Pitch (880Hz)
+      
+      logScanStart(cleanCode);
       playTone(880, 'square', 0.2); 
-      // --------------------------------
 
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
@@ -159,37 +183,110 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }, 500); 
   };
 
+  // --- RECORDING WITH OVERLAY (HIGH QUALITY) ---
   const startRecording = () => {
-      if (!videoRef.current || !videoRef.current.srcObject) return;
-      
-      const stream = videoRef.current.srcObject as MediaStream;
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
 
-      mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+      if (!video || !canvas) {
+          console.error("Video or Canvas missing");
+          return;
+      }
 
-      mediaRecorder.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-          addToQueue(blob, awbRef.current);
-      };
+      try {
+          // 1. Setup Canvas
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
 
-      mediaRecorder.start();
-      setStatus('RECORDING');
+          // 2. Start Drawing Loop
+          const drawFrame = () => {
+              if (!video || !ctx) return;
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+              // TEXT OVERLAY STYLING
+              const fontSize = Math.floor(canvas.height * 0.04); 
+              ctx.font = `bold ${fontSize}px sans-serif`;
+              ctx.fillStyle = 'white';
+              ctx.strokeStyle = 'black';
+              ctx.lineWidth = 4;
+              ctx.lineJoin = 'round';
+
+              const timestamp = new Date().toLocaleString();
+              const awbText = `AWB: ${awbRef.current}`;
+              
+              const x = 30;
+              const yTime = canvas.height - 30;
+              const yAwb = canvas.height - 30 - fontSize - 10;
+
+              // Draw Outline then Fill
+              ctx.strokeText(awbText, x, yAwb);
+              ctx.strokeText(timestamp, x, yTime);
+              ctx.fillText(awbText, x, yAwb);
+              ctx.fillText(timestamp, x, yTime);
+
+              animationFrameRef.current = requestAnimationFrame(drawFrame);
+          };
+
+          drawFrame();
+
+          // 3. Capture Stream (30FPS)
+          const stream = canvas.captureStream(30); 
+          
+          let mimeType = 'video/webm';
+          if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+             mimeType = 'video/webm;codecs=vp9';
+          } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+             mimeType = 'video/webm;codecs=h264'; 
+          }
+
+          // 4Mbps Bitrate for Clarity
+          const options: MediaRecorderOptions = {
+              mimeType: mimeType,
+              videoBitsPerSecond: 4000000 
+          };
+
+          const mediaRecorder = new MediaRecorder(stream, options);
+          mediaRecorderRef.current = mediaRecorder;
+          chunksRef.current = [];
+
+          mediaRecorder.ondataavailable = (e) => {
+              if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+          };
+
+          mediaRecorder.onstop = () => {
+              const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+              
+              if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+              
+              if (blob.size > 0) {
+                  addToQueue(blob, awbRef.current);
+              } else {
+                  console.warn("Empty recording detected.");
+                  alert("Recording failed. Check permissions.");
+              }
+          };
+
+          mediaRecorder.start(1000); 
+          console.log("Recording started...");
+          setStatus('RECORDING');
+
+      } catch (err) {
+          console.error("Recorder Error:", err);
+          alert("Could not start recording.");
+      }
   };
 
   const stopRecording = () => {
-      // --- LOUD AUDIO FEEDBACK (STOP) ---
-      // 'sawtooth' is buzzy. Low Pitch (150Hz)
       playTone(150, 'sawtooth', 0.3);
-      // -----------------------------
 
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           mediaRecorderRef.current.stop();
       }
       
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+
       setStatus('IDLE');
       setAwb('');
       lastSeenCodeRef.current = null;
@@ -208,20 +305,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }]);
   };
 
-  const saveToLocalFolder = async (blob: Blob, filename: string) => {
-      try {
-          let dirHandle = await getDirectoryHandle();
-          if (!dirHandle) return;
-          if ((await dirHandle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
-             if ((await dirHandle.requestPermission({ mode: 'readwrite' })) !== 'granted') return;
-          }
-          const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
-          const writable = await fileHandle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-      } catch (err) { console.error("Local save error", err); }
-  };
-
+  // --- 5. UPLOAD PROCESS (Step 2 - With Auth Fix) ---
   useEffect(() => {
       const processNext = async () => {
           if (isProcessing || uploadQueue.length === 0) return;
@@ -229,20 +313,44 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           const item = uploadQueue[0];
 
           try {
+              console.log("1. Requesting Token for:", item.filename);
               const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
-              await fetch(tokenRes.uploadUrl, {
+              
+              console.log("2. Uploading File...");
+              const uploadRes = await fetch(tokenRes.uploadUrl, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'video/webm' },
                   body: item.blob
               });
-              await api.completeFulfillment({
-                  awb: item.awb,
-                  videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
-                  folderId: tokenRes.folderId || ''
+              
+              if (!uploadRes.ok) throw new Error(`Upload Failed: ${uploadRes.status}`);
+              console.log("3. Upload Success!");
+
+              const finalVideoUrl = `https://drive.google.com/file/d/${tokenRes.fileId}/view`;
+
+              console.log("4. Updating DB Log...");
+              const token = await getAuthHeader(); // Get Token
+              
+              if (!token) throw new Error("Authentication failed. Cannot log video.");
+
+              const { error } = await supabase.functions.invoke('fulfillment', {
+                  body: {
+                      action: 'scan_complete',
+                      awb: item.awb,
+                      video_url: finalVideoUrl,
+                      timestamp: new Date().toISOString(),
+                  },
+                  headers: { Authorization: token } // <--- CRITICAL FIX
               });
+
+              if (error) throw error;
+              console.log("5. Log Completed!");
+
               setUploadQueue(prev => prev.slice(1));
-          } catch (e) {
-              console.error("Upload failed", e);
+
+          } catch (e: any) {
+              console.error("CRITICAL UPLOAD ERROR:", e);
+              alert(`Upload Error: ${e.message}`);
               setUploadQueue(prev => prev.slice(1)); 
           } finally {
               setIsProcessing(false);
@@ -251,7 +359,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       processNext();
   }, [uploadQueue, isProcessing]);
 
-  // --- 5. UI HANDLERS ---
+  // --- UI HANDLERS ---
   const handleFolderSetup = async () => {
       enableAudio(); 
       try {
@@ -286,24 +394,23 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED - FULL SCREEN */}
-        {/* object-cover ensures it fills the screen, no black bars */}
+        <canvas ref={canvasRef} className="hidden" />
+
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
+            playsInline 
+            muted 
         />
 
-        {/* FEEDBACK: STABILIZING */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
-                 {/* Visual hint that entire screen is active but detecting something */}
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
                  <ScanLine className="text-yellow-400 animate-pulse w-32 h-32 drop-shadow-lg" />
                  <p className="text-yellow-400 font-black text-2xl mt-4 drop-shadow-md">HOLD STILL...</p>
              </div>
         )}
 
-        {/* FEEDBACK: DETECTED */}
         {status === 'DETECTED' && (
             <div className="absolute inset-0 z-30 flex items-center justify-center bg-green-500/20 backdrop-blur-sm">
                 <div className="bg-green-600 text-white px-10 py-8 rounded-3xl shadow-2xl animate-bounce">
@@ -313,7 +420,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* RECORDING MODE (Red Slap Zone) */}
         {status === 'RECORDING' && (
             <div 
                 onClick={(e) => { e.stopPropagation(); stopRecording(); }}
@@ -325,11 +431,12 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 <h2 className="text-white font-black text-5xl tracking-widest drop-shadow-xl select-none">
                     STOP
                 </h2>
-                <p className="text-white/80 mt-2 font-mono text-xl">{awb}</p>
+                <p className="text-white/80 mt-2 font-mono text-sm uppercase">
+                    • REC • {awb}
+                </p>
             </div>
         )}
 
-        {/* IDLE GUIDE - FULL SCREEN INDICATOR */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
@@ -337,13 +444,10 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                         TAP SCREEN TO ENABLE AUDIO
                      </div>
                  )}
-                 
-                 {/* Full Screen Scanning Brackets */}
                  <div className="absolute top-10 left-10 w-16 h-16 border-l-4 border-t-4 border-white/40 rounded-tl-xl"></div>
                  <div className="absolute top-10 right-10 w-16 h-16 border-r-4 border-t-4 border-white/40 rounded-tr-xl"></div>
                  <div className="absolute bottom-10 left-10 w-16 h-16 border-l-4 border-b-4 border-white/40 rounded-bl-xl"></div>
                  <div className="absolute bottom-10 right-10 w-16 h-16 border-r-4 border-b-4 border-white/40 rounded-br-xl"></div>
-
                  <p className="text-white/50 font-bold tracking-widest text-lg bg-black/20 px-4 py-1 rounded-full backdrop-blur-sm">
                     SCAN ANYWHERE
                  </p>
