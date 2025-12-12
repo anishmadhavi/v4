@@ -218,15 +218,15 @@ export const api = {
 
   // --- Upload Flow ---
 
-  async getUploadToken(filename: string, contentType: string) {
-    const session = (await supabase.auth.getSession()).data.session;
-    if (!session?.access_token) throw new Error("No active session");
+  getUploadToken: async (filename, contentType) => {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
 
-    const response = await fetch(`${FUNCTION_BASE_URL}/delegate-upload-token?filename=${filename}&contentType=${contentType}`, {
-        headers: {
-             'Authorization': `Bearer ${session.access_token}`
-        }
-    });
+  return await supabase.functions.invoke('delegate-upload-token', {
+    body: { filename, contentType },
+    headers: { Authorization: `Bearer ${token}` } // <--- MUST HAVE THIS
+  });
+}
 
     if (!response.ok) {
         const errText = await response.text();
