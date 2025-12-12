@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
-// --- NEW IMPORT: Ensure this points to your Supabase client ---
-import { supabase } from '../lib/supabase'; 
+// NEW: Import supabase client directly for the edge function calls
+import { supabase } from '../lib/supabase';
 import { FolderOpen, LogOut, Zap, ScanLine, Volume2, VolumeX } from 'lucide-react';
 
 // --- INDEXEDDB HELPERS (Preserved) ---
@@ -39,7 +39,7 @@ const saveDirectoryHandle = async (handle: FileSystemDirectoryHandle) => {
   store.put(handle, 'videoSaveDir');
 };
 
-// --- AUDIO ENGINE (LOUD VERSION) ---
+// --- AUDIO ENGINE ---
 const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: number) => {
     try {
         const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
@@ -98,27 +98,24 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAudioEnabled(true);
   };
 
-  // --- NEW: STEP 1 - LOG SCAN START ---
+  // --- NEW: STEP 1 (Log Scan Start) ---
   const logScanStart = async (scannedAwb: string) => {
-      try {
-          console.log('Step 1: Logging Scan Start for', scannedAwb);
-          // Fire and forget - don't await strictly to keep UI snappy
-          supabase.functions.invoke('fulfillment', {
-              body: {
-                  action: 'scan_start',
-                  awb: scannedAwb,
-                  timestamp: new Date().toISOString(),
-              },
-          }).then(({ error }) => {
-              if (error) console.error("Step 1 Error:", error);
-          });
-      } catch (err) {
-          console.error('Failed to log scan start:', err);
-      }
+      console.log('Step 1: Logging Scan Start for', scannedAwb);
+      // Fire and forget (don't await) to keep UI fast
+      supabase.functions.invoke('fulfillment', {
+          body: {
+              action: 'scan_start',
+              awb: scannedAwb,
+              timestamp: new Date().toISOString(),
+          },
+      }).then(({ error }) => {
+          if (error) console.error("Step 1 Error:", error);
+      });
   };
 
   // --- 2. CAMERA & SCANNING LOGIC ---
   const onScanResult = (result: any) => {
+    // Stop scanning if we are already recording or detected
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
@@ -139,7 +136,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    paused: status === 'RECORDING',
+    paused: status === 'RECORDING', // Important: Pause scanning while recording
     constraints: {
         audio: false,
         video: { 
@@ -164,46 +161,63 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAwb(cleanCode);
       awbRef.current = cleanCode;
 
-      // --- TRIGGER STEP 1 HERE ---
+      // 1. Fire Backend Log (Step 1)
       logScanStart(cleanCode);
 
-      // --- LOUD AUDIO FEEDBACK (SUCCESS) ---
+      // 2. Audio Feedback
       playTone(880, 'square', 0.2); 
-      // --------------------------------
 
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
 
+      // 3. Start Recording after brief delay
       setTimeout(() => {
           startRecording();
       }, 500); 
   };
 
   const startRecording = () => {
-      if (!videoRef.current || !videoRef.current.srcObject) return;
+      if (!videoRef.current || !videoRef.current.srcObject) {
+          console.error("No video stream found to record!");
+          return;
+      }
       
-      const stream = videoRef.current.srcObject as MediaStream;
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      chunksRef.current = [];
+      try {
+          const stream = videoRef.current.srcObject as MediaStream;
+          // Use correct mime type for broader compatibility
+          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
+             ? 'video/webm;codecs=vp9' 
+             : 'video/webm';
 
-      mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
+          const mediaRecorder = new MediaRecorder(stream, { mimeType });
+          mediaRecorderRef.current = mediaRecorder;
+          chunksRef.current = [];
 
-      mediaRecorder.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-          addToQueue(blob, awbRef.current);
-      };
+          mediaRecorder.ondataavailable = (e) => {
+              if (e.data.size > 0) chunksRef.current.push(e.data);
+          };
 
-      mediaRecorder.start();
-      setStatus('RECORDING');
+          mediaRecorder.onstop = () => {
+              const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+              console.log("Recording stopped. Blob size:", blob.size);
+              if (blob.size > 0) {
+                  addToQueue(blob, awbRef.current);
+              } else {
+                  alert("Recording failed: Empty file.");
+              }
+          };
+
+          mediaRecorder.start();
+          console.log("Recording started...");
+          setStatus('RECORDING');
+      } catch (err) {
+          console.error("Failed to start MediaRecorder:", err);
+          alert("Camera recording failed. Refresh page.");
+      }
   };
 
   const stopRecording = () => {
-      // --- LOUD AUDIO FEEDBACK (STOP) ---
       playTone(150, 'sawtooth', 0.3);
-      // -----------------------------
 
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           mediaRecorderRef.current.stop();
@@ -215,7 +229,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
   };
 
-  // --- 4. QUEUE & UPLOAD ---
+  // --- 4. QUEUE & UPLOAD (Step 2 Logic) ---
   const addToQueue = (blob: Blob, recordedAwb: string) => {
       const filename = `${recordedAwb || 'scan'}.webm`;
       saveToLocalFolder(blob, filename);
@@ -241,7 +255,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       } catch (err) { console.error("Local save error", err); }
   };
 
-  // --- MODIFIED: STEP 2 - COMPLETION LOGIC ---
+  // --- DEBUGGING VERSION: UPLOAD PROCESS ---
   useEffect(() => {
       const processNext = async () => {
           if (isProcessing || uploadQueue.length === 0) return;
@@ -249,20 +263,26 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           const item = uploadQueue[0];
 
           try {
-              // 1. Upload Video to Drive (Keep existing logic)
+              console.log("1. Requesting Upload Token for:", item.filename);
               const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
-              await fetch(tokenRes.uploadUrl, {
+              console.log("2. Got Token/URL:", tokenRes);
+
+              console.log("3. Starting File Upload...");
+              const uploadRes = await fetch(tokenRes.uploadUrl, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'video/webm' },
                   body: item.blob
               });
+              
+              if (!uploadRes.ok) {
+                  throw new Error(`Upload Failed: ${uploadRes.status} ${uploadRes.statusText}`);
+              }
+              console.log("4. Upload Success!");
 
-              // 2. Construct URL
+              // Construct URL
               const finalVideoUrl = `https://drive.google.com/file/d/${tokenRes.fileId}/view`;
 
-              // 3. Call Fulfillment Edge Function (Step 2: Update Row)
-              console.log('Step 2: Completing Log for', item.awb);
-              
+              console.log("5. Updating Fulfillment with URL:", finalVideoUrl);
               const { error } = await supabase.functions.invoke('fulfillment', {
                   body: {
                       action: 'scan_complete',
@@ -273,13 +293,14 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               });
 
               if (error) throw error;
+              console.log("6. Fulfillment Logged Successfully!");
 
-              // Success - remove from queue
+              // Remove from queue on success
               setUploadQueue(prev => prev.slice(1));
 
-          } catch (e) {
-              console.error("Upload/Log failed", e);
-              // Retry logic or skip? For now, skipping to avoid blocking queue
+          } catch (e: any) {
+              console.error("CRITICAL UPLOAD ERROR:", e);
+              alert(`Video Upload Failed: ${e.message}`);
               setUploadQueue(prev => prev.slice(1)); 
           } finally {
               setIsProcessing(false);
@@ -288,7 +309,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       processNext();
   }, [uploadQueue, isProcessing]);
 
-  // --- 5. UI HANDLERS (Unchanged) ---
+  // --- 5. UI HANDLERS ---
   const handleFolderSetup = async () => {
       enableAudio(); 
       try {
@@ -327,6 +348,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
+            // Important for iOS/Mobile browsers to allow inline playback
+            playsInline 
+            muted 
         />
 
         {/* FEEDBACK: STABILIZING */}
