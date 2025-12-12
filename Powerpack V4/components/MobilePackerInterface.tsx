@@ -87,28 +87,41 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const chunksRef = useRef<Blob[]>([]);
   const awbRef = useRef('');
   
-  // NEW: Canvas Ref for drawing text overlay
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   
   const stableTimerRef = useRef<any>(null);
   const lastSeenCodeRef = useRef<string | null>(null);
 
-  // --- 1. ENABLE AUDIO ---
   const enableAudio = () => {
       playTone(0, 'sine', 0); 
       setAudioEnabled(true);
   };
 
+  // --- HELPER: GET AUTH TOKEN ---
+  const getAuthHeader = async () => {
+      const { data } = await supabase.auth.getSession();
+      return data.session?.access_token ? `Bearer ${data.session.access_token}` : null;
+  };
+
   // --- STEP 1: Log Scan Start ---
   const logScanStart = async (scannedAwb: string) => {
       console.log('Step 1: Logging Scan Start for', scannedAwb);
+      const token = await getAuthHeader();
+      
+      if (!token) {
+          console.error("No Auth Token found. Cannot log scan.");
+          return;
+      }
+
       supabase.functions.invoke('fulfillment', {
           body: {
               action: 'scan_start',
               awb: scannedAwb,
               timestamp: new Date().toISOString(),
           },
+          // FIX: Explicitly passing Authorization Header
+          headers: { Authorization: token }
       }).then(({ error }) => {
           if (error) console.error("Step 1 Error:", error);
       });
@@ -169,7 +182,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }, 500); 
   };
 
-  // --- MODIFIED: START RECORDING WITH OVERLAY ---
+  // --- RECORDING WITH OVERLAY (HIGH QUALITY) ---
   const startRecording = () => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -180,54 +193,39 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }
 
       try {
-          // 1. Setup Canvas Dimensions to match Video (Full HD)
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
-          
           const ctx = canvas.getContext('2d');
           if (!ctx) return;
 
-          // 2. Start Drawing Loop (Video + Text)
           const drawFrame = () => {
               if (!video || !ctx) return;
-              
-              // A. Draw the video frame
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-              // B. Configure Text Style
-              const fontSize = Math.floor(canvas.height * 0.04); // Dynamic size (4% of height)
+              // TEXT OVERLAY
+              const fontSize = Math.floor(canvas.height * 0.04); 
               ctx.font = `bold ${fontSize}px sans-serif`;
               ctx.fillStyle = 'white';
               ctx.strokeStyle = 'black';
               ctx.lineWidth = 4;
               ctx.lineJoin = 'round';
 
-              // C. Prepare Strings
-              const timestamp = new Date().toLocaleString(); // Date & Time
+              const timestamp = new Date().toLocaleString();
               const awbText = `AWB: ${awbRef.current}`;
-
-              // D. Draw Text (Bottom Left Corner)
               const x = 30;
               const yTime = canvas.height - 30;
               const yAwb = canvas.height - 30 - fontSize - 10;
 
-              // Draw Stroke (Outline) first
               ctx.strokeText(awbText, x, yAwb);
               ctx.strokeText(timestamp, x, yTime);
-
-              // Draw Fill (Color) second
               ctx.fillText(awbText, x, yAwb);
               ctx.fillText(timestamp, x, yTime);
 
-              // Loop
               animationFrameRef.current = requestAnimationFrame(drawFrame);
           };
 
-          // Start the loop
           drawFrame();
 
-          // 3. Capture Stream from Canvas (30 FPS)
-          // 4 Mbps Bitrate for Clarity
           const stream = canvas.captureStream(30); 
           
           let mimeType = 'video/webm';
@@ -239,7 +237,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
           const options: MediaRecorderOptions = {
               mimeType: mimeType,
-              videoBitsPerSecond: 4000000 // 4 Mbps High Quality
+              videoBitsPerSecond: 4000000 // 4 Mbps
           };
 
           const mediaRecorder = new MediaRecorder(stream, options);
@@ -247,16 +245,12 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           chunksRef.current = [];
 
           mediaRecorder.ondataavailable = (e) => {
-              if (e.data && e.data.size > 0) {
-                  chunksRef.current.push(e.data);
-              }
+              if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
           };
 
           mediaRecorder.onstop = () => {
               const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-              console.log("Recording finished. Size:", blob.size);
               
-              // Stop the drawing loop to save battery
               if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
               
               if (blob.size > 0) {
@@ -268,7 +262,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           };
 
           mediaRecorder.start(1000); 
-          console.log("Recording started with Overlay...");
+          console.log("Recording started...");
           setStatus('RECORDING');
 
       } catch (err) {
@@ -284,7 +278,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           mediaRecorderRef.current.stop();
       }
       
-      // Stop the canvas loop immediately
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
 
       setStatus('IDLE');
@@ -293,7 +286,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
   };
 
-  // --- 4. QUEUE & UPLOAD ---
   const addToQueue = (blob: Blob, recordedAwb: string) => {
       const filename = `${recordedAwb || 'scan'}.webm`;
       saveToLocalFolder(blob, filename);
@@ -305,7 +297,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }]);
   };
 
-  // --- 5. DEBUGGING UPLOAD PROCESS ---
+  // --- 5. UPLOAD PROCESS (FIXED AUTH) ---
   useEffect(() => {
       const processNext = async () => {
           if (isProcessing || uploadQueue.length === 0) return;
@@ -314,6 +306,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
           try {
               console.log("1. Requesting Token for:", item.filename);
+              // Ensure your api service handles auth, otherwise check api.ts
               const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
               
               console.log("2. Uploading File...");
@@ -329,6 +322,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               const finalVideoUrl = `https://drive.google.com/file/d/${tokenRes.fileId}/view`;
 
               console.log("4. Updating DB Log...");
+              const token = await getAuthHeader(); // GET TOKEN
+
               const { error } = await supabase.functions.invoke('fulfillment', {
                   body: {
                       action: 'scan_complete',
@@ -336,6 +331,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       video_url: finalVideoUrl,
                       timestamp: new Date().toISOString(),
                   },
+                  // FIX: Explicit Header
+                  headers: { Authorization: token || '' }
               });
 
               if (error) throw error;
@@ -389,11 +386,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* HIDDEN CANVAS (Used for Recording Overlay) */}
-        {/* We keep this hidden from view, but use it to generate the video file */}
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* CAMERA FEED - VISIBLE TO USER */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
@@ -401,7 +395,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             muted 
         />
 
-        {/* FEEDBACK OVERLAYS */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
@@ -430,7 +423,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 <h2 className="text-white font-black text-5xl tracking-widest drop-shadow-xl select-none">
                     STOP
                 </h2>
-                {/* Visual indicator that text is being burnt in */}
                 <p className="text-white/80 mt-2 font-mono text-sm uppercase">
                     • REC • {awb}
                 </p>
