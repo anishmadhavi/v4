@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile } from '../../types';
 import { api } from '../../services/api';
 import { supabase } from '../../lib/supabase';
-import { LayoutDashboard, Users, Folder, Save, Link2Off, RefreshCw, AlertCircle, FileSpreadsheet, Check } from 'lucide-react';
+// ADDED ExternalLink to the imports below
+import { LayoutDashboard, Users, Folder, Save, Link2Off, RefreshCw, AlertCircle, FileSpreadsheet, Check, ExternalLink } from 'lucide-react';
 
 export const SettingsTab: React.FC<{ user: UserProfile }> = ({ user }) => {
     const [platform, setPlatform] = useState(user.integrations?.ecommercePlatform || 'None');
