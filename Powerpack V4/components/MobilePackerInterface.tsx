@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useZxing } from 'react-zxing'; 
 import { UserProfile } from '../types';
 import { api } from '../services/api';
-// NEW: Import supabase client directly for the edge function calls
 import { supabase } from '../lib/supabase';
 import { FolderOpen, LogOut, Zap, ScanLine, Volume2, VolumeX } from 'lucide-react';
 
@@ -51,7 +50,6 @@ const playTone = (freq: number, type: 'sine' | 'square' | 'sawtooth', duration: 
 
         osc.type = type; 
         osc.frequency.setValueAtTime(freq, ctx.currentTime);
-        
         gain.gain.setValueAtTime(1.0, ctx.currentTime); 
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
 
@@ -87,7 +85,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const awbRef = useRef(''); 
+  const awbRef = useRef('');
+  
+  // NEW: Canvas Ref for drawing text overlay
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   
   const stableTimerRef = useRef<any>(null);
   const lastSeenCodeRef = useRef<string | null>(null);
@@ -98,10 +100,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAudioEnabled(true);
   };
 
-  // --- NEW: STEP 1 (Log Scan Start) ---
+  // --- STEP 1: Log Scan Start ---
   const logScanStart = async (scannedAwb: string) => {
       console.log('Step 1: Logging Scan Start for', scannedAwb);
-      // Fire and forget (don't await) to keep UI fast
       supabase.functions.invoke('fulfillment', {
           body: {
               action: 'scan_start',
@@ -115,7 +116,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   // --- 2. CAMERA & SCANNING LOGIC ---
   const onScanResult = (result: any) => {
-    // Stop scanning if we are already recording or detected
     if (status === 'RECORDING' || status === 'DETECTED') return;
 
     const rawCode = result.getText();
@@ -127,7 +127,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         
         if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
         
-        // 1-Second Stability Check
         stableTimerRef.current = setTimeout(() => {
             confirmScan(rawCode);
         }, 1000); 
@@ -136,7 +135,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   const { ref: videoRef } = useZxing({
     onDecodeResult: onScanResult,
-    paused: status === 'RECORDING', // Important: Pause scanning while recording
     constraints: {
         audio: false,
         video: { 
@@ -150,7 +148,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 3. CORE WORKFLOW ---
   const confirmScan = (code: string) => {
       let cleanCode = code.trim();
-      // Double naming fix
       if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
         const half = cleanCode.length / 2;
         if (cleanCode.slice(0, half) === cleanCode.slice(half)) {
@@ -160,59 +157,123 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
       setAwb(cleanCode);
       awbRef.current = cleanCode;
-
-      // 1. Fire Backend Log (Step 1)
+      
       logScanStart(cleanCode);
-
-      // 2. Audio Feedback
       playTone(880, 'square', 0.2); 
 
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
 
-      // 3. Start Recording after brief delay
       setTimeout(() => {
           startRecording();
       }, 500); 
   };
 
+  // --- MODIFIED: START RECORDING WITH OVERLAY ---
   const startRecording = () => {
-      if (!videoRef.current || !videoRef.current.srcObject) {
-          console.error("No video stream found to record!");
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+
+      if (!video || !canvas) {
+          console.error("Video or Canvas missing");
           return;
       }
-      
-      try {
-          const stream = videoRef.current.srcObject as MediaStream;
-          // Use correct mime type for broader compatibility
-          const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
-             ? 'video/webm;codecs=vp9' 
-             : 'video/webm';
 
-          const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      try {
+          // 1. Setup Canvas Dimensions to match Video (Full HD)
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+
+          // 2. Start Drawing Loop (Video + Text)
+          const drawFrame = () => {
+              if (!video || !ctx) return;
+              
+              // A. Draw the video frame
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+              // B. Configure Text Style
+              const fontSize = Math.floor(canvas.height * 0.04); // Dynamic size (4% of height)
+              ctx.font = `bold ${fontSize}px sans-serif`;
+              ctx.fillStyle = 'white';
+              ctx.strokeStyle = 'black';
+              ctx.lineWidth = 4;
+              ctx.lineJoin = 'round';
+
+              // C. Prepare Strings
+              const timestamp = new Date().toLocaleString(); // Date & Time
+              const awbText = `AWB: ${awbRef.current}`;
+
+              // D. Draw Text (Bottom Left Corner)
+              const x = 30;
+              const yTime = canvas.height - 30;
+              const yAwb = canvas.height - 30 - fontSize - 10;
+
+              // Draw Stroke (Outline) first
+              ctx.strokeText(awbText, x, yAwb);
+              ctx.strokeText(timestamp, x, yTime);
+
+              // Draw Fill (Color) second
+              ctx.fillText(awbText, x, yAwb);
+              ctx.fillText(timestamp, x, yTime);
+
+              // Loop
+              animationFrameRef.current = requestAnimationFrame(drawFrame);
+          };
+
+          // Start the loop
+          drawFrame();
+
+          // 3. Capture Stream from Canvas (30 FPS)
+          // 4 Mbps Bitrate for Clarity
+          const stream = canvas.captureStream(30); 
+          
+          let mimeType = 'video/webm';
+          if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+             mimeType = 'video/webm;codecs=vp9';
+          } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264')) {
+             mimeType = 'video/webm;codecs=h264'; 
+          }
+
+          const options: MediaRecorderOptions = {
+              mimeType: mimeType,
+              videoBitsPerSecond: 4000000 // 4 Mbps High Quality
+          };
+
+          const mediaRecorder = new MediaRecorder(stream, options);
           mediaRecorderRef.current = mediaRecorder;
           chunksRef.current = [];
 
           mediaRecorder.ondataavailable = (e) => {
-              if (e.data.size > 0) chunksRef.current.push(e.data);
+              if (e.data && e.data.size > 0) {
+                  chunksRef.current.push(e.data);
+              }
           };
 
           mediaRecorder.onstop = () => {
               const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-              console.log("Recording stopped. Blob size:", blob.size);
+              console.log("Recording finished. Size:", blob.size);
+              
+              // Stop the drawing loop to save battery
+              if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+              
               if (blob.size > 0) {
                   addToQueue(blob, awbRef.current);
               } else {
-                  alert("Recording failed: Empty file.");
+                  console.warn("Empty recording detected.");
+                  alert("Recording failed. Check permissions.");
               }
           };
 
-          mediaRecorder.start();
-          console.log("Recording started...");
+          mediaRecorder.start(1000); 
+          console.log("Recording started with Overlay...");
           setStatus('RECORDING');
+
       } catch (err) {
-          console.error("Failed to start MediaRecorder:", err);
-          alert("Camera recording failed. Refresh page.");
+          console.error("Recorder Error:", err);
+          alert("Could not start recording.");
       }
   };
 
@@ -223,13 +284,16 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           mediaRecorderRef.current.stop();
       }
       
+      // Stop the canvas loop immediately
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+
       setStatus('IDLE');
       setAwb('');
       lastSeenCodeRef.current = null;
       if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
   };
 
-  // --- 4. QUEUE & UPLOAD (Step 2 Logic) ---
+  // --- 4. QUEUE & UPLOAD ---
   const addToQueue = (blob: Blob, recordedAwb: string) => {
       const filename = `${recordedAwb || 'scan'}.webm`;
       saveToLocalFolder(blob, filename);
@@ -241,21 +305,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }]);
   };
 
-  const saveToLocalFolder = async (blob: Blob, filename: string) => {
-      try {
-          let dirHandle = await getDirectoryHandle();
-          if (!dirHandle) return;
-          if ((await dirHandle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
-             if ((await dirHandle.requestPermission({ mode: 'readwrite' })) !== 'granted') return;
-          }
-          const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
-          const writable = await fileHandle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-      } catch (err) { console.error("Local save error", err); }
-  };
-
-  // --- DEBUGGING VERSION: UPLOAD PROCESS ---
+  // --- 5. DEBUGGING UPLOAD PROCESS ---
   useEffect(() => {
       const processNext = async () => {
           if (isProcessing || uploadQueue.length === 0) return;
@@ -263,26 +313,22 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           const item = uploadQueue[0];
 
           try {
-              console.log("1. Requesting Upload Token for:", item.filename);
+              console.log("1. Requesting Token for:", item.filename);
               const tokenRes = await api.getUploadToken(item.filename, 'video/webm');
-              console.log("2. Got Token/URL:", tokenRes);
-
-              console.log("3. Starting File Upload...");
+              
+              console.log("2. Uploading File...");
               const uploadRes = await fetch(tokenRes.uploadUrl, {
                   method: 'PUT',
                   headers: { 'Content-Type': 'video/webm' },
                   body: item.blob
               });
               
-              if (!uploadRes.ok) {
-                  throw new Error(`Upload Failed: ${uploadRes.status} ${uploadRes.statusText}`);
-              }
-              console.log("4. Upload Success!");
+              if (!uploadRes.ok) throw new Error(`Upload Failed: ${uploadRes.status}`);
+              console.log("3. Upload Success!");
 
-              // Construct URL
               const finalVideoUrl = `https://drive.google.com/file/d/${tokenRes.fileId}/view`;
 
-              console.log("5. Updating Fulfillment with URL:", finalVideoUrl);
+              console.log("4. Updating DB Log...");
               const { error } = await supabase.functions.invoke('fulfillment', {
                   body: {
                       action: 'scan_complete',
@@ -293,14 +339,13 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               });
 
               if (error) throw error;
-              console.log("6. Fulfillment Logged Successfully!");
+              console.log("5. Log Completed!");
 
-              // Remove from queue on success
               setUploadQueue(prev => prev.slice(1));
 
           } catch (e: any) {
               console.error("CRITICAL UPLOAD ERROR:", e);
-              alert(`Video Upload Failed: ${e.message}`);
+              alert(`Upload Error: ${e.message}`);
               setUploadQueue(prev => prev.slice(1)); 
           } finally {
               setIsProcessing(false);
@@ -309,7 +354,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       processNext();
   }, [uploadQueue, isProcessing]);
 
-  // --- 5. UI HANDLERS ---
+  // --- UI HANDLERS ---
   const handleFolderSetup = async () => {
       enableAudio(); 
       try {
@@ -344,16 +389,19 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED */}
+        {/* HIDDEN CANVAS (Used for Recording Overlay) */}
+        {/* We keep this hidden from view, but use it to generate the video file */}
+        <canvas ref={canvasRef} className="hidden" />
+
+        {/* CAMERA FEED - VISIBLE TO USER */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
-            // Important for iOS/Mobile browsers to allow inline playback
             playsInline 
             muted 
         />
 
-        {/* FEEDBACK: STABILIZING */}
+        {/* FEEDBACK OVERLAYS */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
@@ -362,7 +410,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
              </div>
         )}
 
-        {/* FEEDBACK: DETECTED */}
         {status === 'DETECTED' && (
             <div className="absolute inset-0 z-30 flex items-center justify-center bg-green-500/20 backdrop-blur-sm">
                 <div className="bg-green-600 text-white px-10 py-8 rounded-3xl shadow-2xl animate-bounce">
@@ -372,7 +419,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* RECORDING MODE */}
         {status === 'RECORDING' && (
             <div 
                 onClick={(e) => { e.stopPropagation(); stopRecording(); }}
@@ -384,11 +430,13 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                 <h2 className="text-white font-black text-5xl tracking-widest drop-shadow-xl select-none">
                     STOP
                 </h2>
-                <p className="text-white/80 mt-2 font-mono text-xl">{awb}</p>
+                {/* Visual indicator that text is being burnt in */}
+                <p className="text-white/80 mt-2 font-mono text-sm uppercase">
+                    • REC • {awb}
+                </p>
             </div>
         )}
 
-        {/* IDLE GUIDE */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
@@ -400,7 +448,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                  <div className="absolute top-10 right-10 w-16 h-16 border-r-4 border-t-4 border-white/40 rounded-tr-xl"></div>
                  <div className="absolute bottom-10 left-10 w-16 h-16 border-l-4 border-b-4 border-white/40 rounded-bl-xl"></div>
                  <div className="absolute bottom-10 right-10 w-16 h-16 border-r-4 border-b-4 border-white/40 rounded-br-xl"></div>
-
                  <p className="text-white/50 font-bold tracking-widest text-lg bg-black/20 px-4 py-1 rounded-full backdrop-blur-sm">
                     SCAN ANYWHERE
                  </p>
