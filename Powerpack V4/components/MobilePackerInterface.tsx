@@ -57,6 +57,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [totalUploaded, setTotalUploaded] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -297,19 +298,22 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
               try {
                   // Step 1: Get upload token from delegate-upload-token Edge Function
-                  console.log("📝 Getting upload token...");
+                  console.log("📝 Step 1/3: Getting upload token...");
                   const tokenRes = await api.getUploadToken(
                       itemToUpload.filename, 
                       itemToUpload.mimeType
                   );
                   
                   if (!tokenRes.uploadUrl) {
-                      throw new Error("No upload URL received from server");
+                      throw new Error("STEP 1 FAILED: No upload URL received from server");
                   }
 
-                  console.log("✅ Upload token received, uploading to Drive...");
+                  console.log("✅ Step 1 complete: Upload token received");
+                  console.log("   Folder ID:", tokenRes.folderId || "none");
+                  console.log("   Folder Name:", tokenRes.folderName || "none");
 
                   // Step 2: Upload directly to Google Drive
+                  console.log("📤 Step 2/3: Uploading to Google Drive...");
                   const googleRes = await fetch(tokenRes.uploadUrl, {
                       method: 'PUT',
                       headers: { 
@@ -320,28 +324,51 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   if (!googleRes.ok) {
                       const errText = await googleRes.text();
-                      throw new Error(`Drive upload failed (${googleRes.status}): ${errText}`);
+                      throw new Error(`STEP 2 FAILED: Drive upload (${googleRes.status}): ${errText}`);
                   }
                   
-                  const googleData = await googleRes.json();
+                  // Check response type
+                  const contentType = googleRes.headers.get('content-type');
+                  console.log("   Response content-type:", contentType);
+                  
+                  let googleData;
+                  try {
+                      googleData = await googleRes.json();
+                  } catch (parseErr) {
+                      throw new Error(`STEP 2 FAILED: Could not parse Google response as JSON`);
+                  }
+                  
+                  console.log("   Google response:", JSON.stringify(googleData));
+                  
                   const realFileId = googleData.id; 
 
                   if (!realFileId) {
-                      throw new Error("Drive upload succeeded but returned no file ID");
+                      throw new Error(`STEP 2 FAILED: No file ID in response. Got: ${JSON.stringify(googleData)}`);
                   }
 
-                  console.log("✅ Drive upload complete, file ID:", realFileId);
+                  console.log("✅ Step 2 complete: File ID:", realFileId);
 
                   // Step 3: Complete fulfillment (log to DB + append to Sheet)
-                  console.log("📊 Completing fulfillment...");
-                  await api.completeFulfillment({
+                  console.log("📊 Step 3/3: Completing fulfillment...");
+                  
+                  const fulfillmentData = {
                       stage: 1,
                       awb: itemToUpload.awb,
                       videoUrl: `https://drive.google.com/file/d/${realFileId}/view`,
                       folder_id: tokenRes.folderId || null 
-                  });
+                  };
+                  
+                  console.log("   Fulfillment payload:", JSON.stringify(fulfillmentData));
+                  
+                  try {
+                      const fulfillmentRes = await api.completeFulfillment(fulfillmentData);
+                      console.log("   Fulfillment response:", JSON.stringify(fulfillmentRes));
+                  } catch (fulfillErr: any) {
+                      throw new Error(`STEP 3 FAILED: ${fulfillErr.message}`);
+                  }
 
-                  console.log("✅ Fulfillment complete:", itemToUpload.awb);
+                  console.log("✅ Step 3 complete: All done!");
+                  console.log("🎉 SUCCESS:", itemToUpload.awb);
 
                   // Success! Remove from queue
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
@@ -349,7 +376,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                   playTone(660, 'sine', 0.15);
 
               } catch (e: any) {
-                  console.error(`❌ Upload failed [${attemptNum}/3]:`, e.message);
+                  console.error(`❌ UPLOAD FAILED [${attemptNum}/3]:`, e.message);
+                  console.error("   Full error:", e);
+                  
+                  // Store error for display
+                  setLastError(e.message);
                   
                   // Mark as failed (will retry automatically)
                   setUploadQueue(prev => prev.map(i => 
@@ -360,6 +391,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   // Play error sound
                   playTone(220, 'square', 0.2);
+
+                  // Show alert on first failure so user knows what's wrong
+                  if (attemptNum === 1) {
+                      alert(`Upload Error (will retry):\n\n${e.message}\n\nAWB: ${itemToUpload.awb}`);
+                  }
 
                   // If network error, wait before retry
                   if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
@@ -529,6 +565,28 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                         <span>{failedCount} items retrying...</span>
                     </div>
                 )}
+            </div>
+        )}
+
+        {/* ERROR DISPLAY */}
+        {lastError && status === 'IDLE' && (
+            <div className="absolute top-1/2 left-4 right-4 transform -translate-y-1/2 bg-red-600 text-white rounded-2xl p-4 z-30 shadow-2xl">
+                <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1">
+                        <h3 className="font-bold mb-1 flex items-center gap-2">
+                            <AlertCircle size={16}/>
+                            Last Error
+                        </h3>
+                        <p className="text-sm opacity-90 break-words">{lastError}</p>
+                        <p className="text-xs opacity-70 mt-2">Will retry automatically...</p>
+                    </div>
+                    <button 
+                        onClick={() => setLastError(null)}
+                        className="px-3 py-1 bg-white/20 rounded-lg text-xs hover:bg-white/30"
+                    >
+                        Dismiss
+                    </button>
+                </div>
             </div>
         )}
     </div>
