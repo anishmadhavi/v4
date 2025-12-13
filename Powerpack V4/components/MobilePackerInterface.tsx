@@ -297,59 +297,75 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               console.log(`⬆️ Upload attempt ${attemptNum}/3:`, itemToUpload.awb);
 
               try {
-                  // Step 1: Get upload token from delegate-upload-token Edge Function
-                  console.log("📝 Step 1/3: Getting upload token...");
+                  // Step 1: Get upload token
+                  console.log("📝 Step 1/4: Getting upload token...");
                   const tokenRes = await api.getUploadToken(
                       itemToUpload.filename, 
                       itemToUpload.mimeType
                   );
                   
-                  if (!tokenRes.uploadUrl) {
-                      throw new Error("STEP 1 FAILED: No upload URL received from server");
+                  if (!tokenRes.uploadUrl || !tokenRes.accessToken) {
+                      throw new Error("STEP 1 FAILED: No upload URL or token received");
                   }
 
-                  console.log("✅ Step 1 complete: Upload token received");
-                  console.log("   Folder ID:", tokenRes.folderId || "none");
-                  console.log("   Folder Name:", tokenRes.folderName || "none");
+                  console.log("✅ Step 1 complete");
 
-                  // Step 2: Upload directly to Google Drive
-                  console.log("📤 Step 2/3: Uploading to Google Drive...");
-                  const googleRes = await fetch(tokenRes.uploadUrl, {
-                      method: 'PUT',
-                      headers: { 
-                          'Content-Type': itemToUpload.mimeType 
+                  // Step 2: Create file metadata first
+                  console.log("📝 Step 2/4: Creating file in Drive...");
+                  
+                  const metadata = tokenRes.metadata ? JSON.parse(tokenRes.metadata) : {
+                      name: itemToUpload.filename,
+                      mimeType: itemToUpload.mimeType,
+                      parents: [tokenRes.folderId]
+                  };
+
+                  const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+                      method: 'POST',
+                      headers: {
+                          'Authorization': `Bearer ${tokenRes.accessToken}`,
+                          'Content-Type': 'application/json'
                       },
-                      body: itemToUpload.blob
+                      body: JSON.stringify(metadata)
                   });
 
-                  if (!googleRes.ok) {
-                      const errText = await googleRes.text();
-                      throw new Error(`STEP 2 FAILED: Drive upload (${googleRes.status}): ${errText}`);
+                  if (!createRes.ok) {
+                      const errText = await createRes.text();
+                      throw new Error(`STEP 2 FAILED: Create file (${createRes.status}): ${errText}`);
                   }
-                  
-                  // Check response type
-                  const contentType = googleRes.headers.get('content-type');
-                  console.log("   Response content-type:", contentType);
-                  
-                  let googleData;
-                  try {
-                      googleData = await googleRes.json();
-                  } catch (parseErr) {
-                      throw new Error(`STEP 2 FAILED: Could not parse Google response as JSON`);
-                  }
-                  
-                  console.log("   Google response:", JSON.stringify(googleData));
-                  
-                  const realFileId = googleData.id; 
+
+                  const fileData = await createRes.json();
+                  const realFileId = fileData.id;
 
                   if (!realFileId) {
-                      throw new Error(`STEP 2 FAILED: No file ID in response. Got: ${JSON.stringify(googleData)}`);
+                      throw new Error("STEP 2 FAILED: No file ID returned");
                   }
 
-                  console.log("✅ Step 2 complete: File ID:", realFileId);
+                  console.log("✅ Step 2 complete: File created:", realFileId);
 
-                  // Step 3: Complete fulfillment (log to DB + append to Sheet)
-                  console.log("📊 Step 3/3: Completing fulfillment...");
+                  // Step 3: Upload content to the file
+                  console.log("📤 Step 3/4: Uploading video content...");
+
+                  const uploadContentRes = await fetch(
+                      `https://www.googleapis.com/upload/drive/v3/files/${realFileId}?uploadType=media`,
+                      {
+                          method: 'PATCH',
+                          headers: {
+                              'Authorization': `Bearer ${tokenRes.accessToken}`,
+                              'Content-Type': itemToUpload.mimeType
+                          },
+                          body: itemToUpload.blob
+                      }
+                  );
+
+                  if (!uploadContentRes.ok) {
+                      const errText = await uploadContentRes.text();
+                      throw new Error(`STEP 3 FAILED: Upload content (${uploadContentRes.status}): ${errText}`);
+                  }
+
+                  console.log("✅ Step 3 complete: Content uploaded");
+
+                  // Step 4: Complete fulfillment (log to DB + append to Sheet)
+                  console.log("📊 Step 4/4: Completing fulfillment...");
                   
                   const fulfillmentData = {
                       stage: 1,
@@ -367,7 +383,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       throw new Error(`STEP 3 FAILED: ${fulfillErr.message}`);
                   }
 
-                  console.log("✅ Step 3 complete: All done!");
+                  console.log("✅ Step 4 complete: All done!");
                   console.log("🎉 SUCCESS:", itemToUpload.awb);
 
                   // Success! Remove from queue
