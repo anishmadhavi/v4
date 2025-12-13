@@ -251,7 +251,7 @@ export const api = {
   }
 
   const response = await fetch(
-    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/complete-fulfillment`,
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fulfillment`,
     {
       method: 'POST',
       headers: {
