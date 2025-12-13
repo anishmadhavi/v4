@@ -1,8 +1,11 @@
 import { supabase } from '../lib/supabase';
 import { UserProfile, VideoLog, CreditRequest, UserRole } from '../types';
 
-// Supabase Edge Function URL prefix
-const FUNCTION_BASE_URL = import.meta.env.VITE_SUPABASE_URL + '/functions/v1';
+// --- URL SANITIZATION (The Fix) ---
+// This removes any trailing slash from the env variable to prevent "//" errors
+const rawUrl = import.meta.env.VITE_SUPABASE_URL || "";
+const cleanUrl = rawUrl.replace(/\/$/, ""); 
+const FUNCTION_BASE_URL = `${cleanUrl}/functions/v1`;
 
 export const api = {
   // --- Auth & Profiles ---
@@ -131,7 +134,6 @@ export const api = {
     }).eq('id', adminId);
   },
 
-  // --- NEW: Automated Powerpack Setup ---
   async setupPowerpackInfrastructure(adminId: string) {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
@@ -154,7 +156,6 @@ export const api = {
     const listData = await listRes.json();
     const folders = listData.folders || [];
     
-    // Find existing folder or create new one
     let powerpackFolder = folders.find((f: any) => f.name === 'Powerpack');
 
     if (!powerpackFolder) {
@@ -174,7 +175,6 @@ export const api = {
         powerpackFolder = await createRes.json();
     }
 
-    // 2. Create "Powerpack Logs" Sheet inside it
     const sheetRes = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
         method: 'POST',
         headers: {
@@ -213,8 +213,6 @@ export const api = {
     }));
   },
 
-  // --- Upload Flow ---
-
   async getUploadToken(filename: string, contentType: string) {
     const session = (await supabase.auth.getSession()).data.session;
     if (!session?.access_token) throw new Error("No active session");
@@ -233,7 +231,7 @@ export const api = {
     return response.json() as Promise<{ uploadUrl: string; folderId?: string; folderName?: string; fileId?: string }>; 
   },
 
-  // --- FULFILLMENT (FIXED URL) ---
+  // --- FULFILLMENT (FIXED) ---
   async completeFulfillment(data: {
     stage?: number;
     awb: string;
@@ -247,10 +245,10 @@ export const api = {
       throw new Error("User is not authenticated. Cannot complete fulfillment.");
     }
 
-    // *** FIX: Uses FUNCTION_BASE_URL for consistency ***
-    const response = await fetch(
-      `${FUNCTION_BASE_URL}/fulfillment`,
-      {
+    // DEBUG: This helps us see if the URL is correct in the alert if it fails again
+    const targetUrl = `${FUNCTION_BASE_URL}/fulfillment`;
+
+    const response = await fetch(targetUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -268,7 +266,6 @@ export const api = {
 
     if (!response.ok) {
       const errorText = await response.text();
-      // This ensures we see the REAL error (404, 500, etc.) in the frontend alert
       throw new Error(`Fulfillment failed (${response.status}): ${errorText}`);
     }
 
