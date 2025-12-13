@@ -131,21 +131,18 @@ export const api = {
     }).eq('id', adminId);
   },
 
-  // ... inside api object ...
-
   // --- NEW: Automated Powerpack Setup ---
   async setupPowerpackInfrastructure(adminId: string) {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error("No active session");
 
-    // 1. List folders (Explicitly passing admin_id)
+    // 1. List folders
     const listRes = await fetch(`${FUNCTION_BASE_URL}/google-auth`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session.access_token}`
         },
-        // PASS admin_id HERE to ensure backend finds the right tokens
         body: JSON.stringify({ action: 'list_folders', admin_id: adminId }) 
     });
 
@@ -236,7 +233,7 @@ export const api = {
     return response.json() as Promise<{ uploadUrl: string; folderId?: string; folderName?: string; fileId?: string }>; 
   },
 
-  // --- FULFILLMENT ---
+  // --- FULFILLMENT (FIXED URL) ---
   async completeFulfillment(data: {
     stage?: number;
     awb: string;
@@ -245,13 +242,15 @@ export const api = {
     duration?: number;
   }) {
     const { data: { session } } = await supabase.auth.getSession();
-  
+
     if (!session?.access_token) {
       throw new Error("User is not authenticated. Cannot complete fulfillment.");
     }
-  
-    // ✅ FIX: Use FUNCTION_BASE_URL instead of import.meta.env...
-    const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
+
+    // *** FIX: Uses FUNCTION_BASE_URL for consistency ***
+    const response = await fetch(
+      `${FUNCTION_BASE_URL}/fulfillment`,
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -266,15 +265,17 @@ export const api = {
         }),
       }
     );
-  
+
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Fulfillment failed: ${errorText}`);
+      // This ensures we see the REAL error (404, 500, etc.) in the frontend alert
+      throw new Error(`Fulfillment failed (${response.status}): ${errorText}`);
     }
-  
+
     const text = await response.text();
     return text ? JSON.parse(text) : { success: true };
   },
+
   // --- Credits ---
 
   async getCreditRequests(role: UserRole, userId?: string): Promise<CreditRequest[]> {
