@@ -42,7 +42,7 @@ interface QueueItem {
   awb: string;
   filename: string;
   mimeType: string;
-  status: 'PENDING' | 'UPLOADING'; // New status for parallel uploads
+  status: 'PENDING' | 'UPLOADING';
 }
 
 const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
@@ -50,7 +50,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const [awb, setAwb] = useState(''); 
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
   
-  // Changed from isProcessing boolean to a counter for parallel uploads
   const [activeUploads, setActiveUploads] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
 
@@ -71,12 +70,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       
       const stream = videoElement.srcObject as MediaStream;
       
-      // Smart Codec Selection
       let mimeType = 'video/webm';
       if (MediaRecorder.isTypeSupported('video/mp4')) {
-          mimeType = 'video/mp4'; // iOS Preferred
+          mimeType = 'video/mp4'; 
       } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-          mimeType = 'video/webm;codecs=vp9'; // Android High Efficiency
+          mimeType = 'video/webm;codecs=vp9'; 
       }
 
       try {
@@ -106,7 +104,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }
   };
 
-  // --- 2. QUEUE MANAGEMENT (Parallel Support) ---
+  // --- 2. QUEUE MANAGEMENT ---
   const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
       const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
       const filename = `${recordedAwb || 'scan'}.${ext}`;
@@ -179,52 +177,55 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
         audio: false,
         video: { 
             facingMode: 'environment',
-            width: { ideal: 1920 }, // Still requesting Full HD
+            width: { ideal: 1920 },
             height: { ideal: 1080 } 
         }
     }
   });
 
-  // --- 4. PARALLEL UPLOAD ENGINE (Max 2 Concurrent) ---
+  // --- 4. PARALLEL UPLOAD ENGINE (FIXED) ---
   useEffect(() => {
-      // Find items that need uploading
       const pendingItems = uploadQueue.filter(item => item.status === 'PENDING');
       
-      // If we have pending items AND space in our "upload threads" (Max 2)
       if (pendingItems.length > 0 && activeUploads < 2) {
           const itemToUpload = pendingItems[0];
           
-          // 1. Mark as Uploading immediately so we don't pick it again
           setUploadQueue(prev => prev.map(i => 
               i.id === itemToUpload.id ? { ...i, status: 'UPLOADING' } : i
           ));
           setActiveUploads(prev => prev + 1);
 
-          // 2. Perform Upload
           const performUpload = async () => {
               try {
+                  // A. Get Token
                   const tokenRes = await api.getUploadToken(itemToUpload.filename, itemToUpload.mimeType);
                   
-                  await fetch(tokenRes.uploadUrl, {
+                  // B. Upload to Google & Capture Response
+                  const googleRes = await fetch(tokenRes.uploadUrl, {
                       method: 'PUT',
                       headers: { 'Content-Type': itemToUpload.mimeType },
                       body: itemToUpload.blob
                   });
 
+                  if (!googleRes.ok) throw new Error("Google Drive Upload Failed");
+                  
+                  // *** CRITICAL FIX: Extract Real File ID ***
+                  const googleData = await googleRes.json();
+                  const realFileId = googleData.id; 
+
+                  // C. Send to Backend (Fulfillment)
                   await api.completeFulfillment({
                       awb: itemToUpload.awb,
-                      videoUrl: `https://drive.google.com/file/d/${tokenRes.fileId}/view`,
-                      folderId: tokenRes.folderId || ''
+                      videoUrl: `https://drive.google.com/file/d/${realFileId}/view`,
+                      folderId: tokenRes.folderId || '' 
                   });
 
-                  // Success: Remove from queue completely
+                  // Success: Remove
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } catch (e) {
                   console.error("Upload failed", e);
-                  // On error, remove (or you could reset to PENDING to retry)
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } finally {
-                  // Release the "thread"
                   setActiveUploads(prev => prev - 1);
               }
           };
@@ -247,7 +248,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                    ) : (
                        <span className="flex items-center gap-1 text-yellow-400 font-bold">
                            <Loader2 size={12} className="animate-spin"/> 
-                           {/* Show how many are actively going vs pending */}
                            Uploading... ({activeUploads} active, {uploadQueue.length - activeUploads} waiting)
                        </span>
                    )}
@@ -271,7 +271,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             muted 
         />
 
-        {/* FEEDBACK: STABILIZING (2 Seconds) */}
+        {/* FEEDBACK: STABILIZING */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/10">
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
@@ -326,11 +326,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                     <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
                     <span className="text-white font-bold tracking-widest text-sm">SCANNER READY</span>
                  </div>
-
-                 <div className="absolute top-10 left-10 w-16 h-16 border-l-4 border-t-4 border-white/40 rounded-tl-xl"></div>
-                 <div className="absolute top-10 right-10 w-16 h-16 border-r-4 border-t-4 border-white/40 rounded-tr-xl"></div>
-                 <div className="absolute bottom-10 left-10 w-16 h-16 border-l-4 border-b-4 border-white/40 rounded-bl-xl"></div>
-                 <div className="absolute bottom-10 right-10 w-16 h-16 border-r-4 border-b-4 border-white/40 rounded-br-xl"></div>
             </div>
         )}
     </div>
