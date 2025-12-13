@@ -238,37 +238,42 @@ export const api = {
 
   // --- FULFILLMENT ---
 
-  async completeFulfillment(data: { awb: string; videoUrl: string; folderId: string; duration?: number }) {
-    const { data: { session } } = await supabase.auth.getSession();
-    
-    if (!session?.access_token) {
-        throw new Error("User is not authenticated. Cannot complete fulfillment.");
-    }
+  async completeFulfillment(data: {
+  stage?: number;
+  awb: string;
+  videoUrl: string;
+  folder_id: string | null;
+  duration?: number;
+}) {
+  const { data: { session } } = await supabase.auth.getSession();
 
-    const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({
-            awb: data.awb,
-            videoUrl: data.videoUrl,
-            folder_id: data.folderId, 
-            duration: data.duration
-        })
-    });
+  if (!session?.access_token) {
+    throw new Error("User is not authenticated. Cannot complete fulfillment.");
+  }
 
-    if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Backend Error:", errorText);
-        throw new Error(`Fulfillment failed: ${errorText}`);
-    }
+  const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({
+      stage: data.stage ?? 1,
+      awb: data.awb,
+      videoUrl: data.videoUrl,
+      folder_id: data.folder_id,
+      duration: data.duration,
+    }),
+  });
 
-    const text = await response.text();
-    return text ? JSON.parse(text) : { success: true };
-  },
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Fulfillment failed: ${errorText}`);
+  }
 
+  const text = await response.text();
+  return text ? JSON.parse(text) : { success: true };
+},
   // --- Credits ---
 
   async getCreditRequests(role: UserRole, userId?: string): Promise<CreditRequest[]> {
