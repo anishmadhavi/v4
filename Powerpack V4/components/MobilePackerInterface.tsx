@@ -258,7 +258,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
     }
   });
 
-  // --- PARALLEL UPLOAD ENGINE WITH SMART RETRY ---
+  // --- PARALLEL UPLOAD ENGINE WITH SMART RETRY & ENHANCED DEBUG ---
   useEffect(() => {
       // Only process if online
       if (!isOnline) {
@@ -305,7 +305,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       throw new Error("STEP 1 FAILED: No upload URL or token received");
                   }
 
-                  console.log("✅ Step 1 complete");
+                  console.log("✅ Step 1 complete - Token received");
 
                   // Step 2: Create file metadata first
                   console.log("🔐 Step 2/4: Creating file in Drive...");
@@ -327,6 +327,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   if (!createRes.ok) {
                       const errText = await createRes.text();
+                      console.error("Step 2 failed:", errText);
                       throw new Error(`STEP 2 FAILED: Create file (${createRes.status}): ${errText}`);
                   }
 
@@ -356,6 +357,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   if (!uploadContentRes.ok) {
                       const errText = await uploadContentRes.text();
+                      console.error("Step 3 failed:", errText);
                       throw new Error(`STEP 3 FAILED: Upload content (${uploadContentRes.status}): ${errText}`);
                   }
 
@@ -371,12 +373,17 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       folder_id: tokenRes.folderId || null 
                   };
                   
-                  console.log("   Fulfillment payload:", JSON.stringify(fulfillmentData));
+                  console.log("📋 Fulfillment payload:", JSON.stringify(fulfillmentData, null, 2));
                   
                   try {
+                      console.log("🚀 Calling api.completeFulfillment...");
                       const fulfillmentRes = await api.completeFulfillment(fulfillmentData);
-                      console.log("   Fulfillment response:", JSON.stringify(fulfillmentRes));
+                      console.log("✅ Fulfillment response:", JSON.stringify(fulfillmentRes, null, 2));
                   } catch (fulfillErr: any) {
+                      console.error("❌ Fulfillment error:", fulfillErr);
+                      console.error("   Error name:", fulfillErr.name);
+                      console.error("   Error message:", fulfillErr.message);
+                      console.error("   Error stack:", fulfillErr.stack);
                       throw new Error(`STEP 4 FAILED: ${fulfillErr.message}`);
                   }
 
@@ -391,6 +398,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               } catch (e: any) {
                   console.error(`❌ UPLOAD FAILED [${attemptNum}/3]:`, e.message);
                   console.error("   Full error:", e);
+                  console.error("   Error stack:", e.stack);
                   
                   // Store error for display
                   setLastError(e.message);
