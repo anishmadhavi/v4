@@ -187,9 +187,11 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   useEffect(() => {
       const pendingItems = uploadQueue.filter(item => item.status === 'PENDING');
       
+      // Allow up to 2 concurrent uploads
       if (pendingItems.length > 0 && activeUploads < 2) {
           const itemToUpload = pendingItems[0];
           
+          // Mark as uploading immediately so it's not picked up again
           setUploadQueue(prev => prev.map(i => 
               i.id === itemToUpload.id ? { ...i, status: 'UPLOADING' } : i
           ));
@@ -197,10 +199,10 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
           const performUpload = async () => {
               try {
-                  // A. Get Token
+                  // A. Get Token & URL from Backend
                   const tokenRes = await api.getUploadToken(itemToUpload.filename, itemToUpload.mimeType);
                   
-                  // B. Upload to Google & Capture Response
+                  // B. Upload to Google Drive (PUT Request)
                   const googleRes = await fetch(tokenRes.uploadUrl, {
                       method: 'PUT',
                       headers: { 'Content-Type': itemToUpload.mimeType },
@@ -209,21 +211,26 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   if (!googleRes.ok) throw new Error("Google Drive Upload Failed");
                   
-                  // *** CRITICAL FIX: Extract Real File ID ***
+                  // *** CRITICAL FIX START: Extract Real File ID ***
+                  // Google returns the metadata (including ID) in the body of the PUT response
                   const googleData = await googleRes.json();
                   const realFileId = googleData.id; 
 
-                  // C. Send to Backend (Fulfillment)
+                  if (!realFileId) throw new Error("Google Upload succeeded but returned no ID");
+                  // *** CRITICAL FIX END ***
+
+                  // C. Send to Backend (Fulfillment) with the CORRECT ID
                   await api.completeFulfillment({
                       awb: itemToUpload.awb,
                       videoUrl: `https://drive.google.com/file/d/${realFileId}/view`,
                       folderId: tokenRes.folderId || '' 
                   });
 
-                  // Success: Remove
+                  // Success: Remove from queue
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } catch (e) {
                   console.error("Upload failed", e);
+                  // Remove failed item to prevent blocking queue (or implement retry logic here)
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } finally {
                   setActiveUploads(prev => prev - 1);
