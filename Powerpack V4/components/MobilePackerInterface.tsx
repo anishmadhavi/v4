@@ -64,12 +64,32 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setAudioEnabled(true);
   };
 
-  // --- 1. RECORDING START (With Bitrate Optimization) ---
+  // --- 2. QUEUE MANAGEMENT ---
+  const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      // Fallback to 'scan' if AWB is somehow missing, but this fix prevents that
+      const finalAwb = recordedAwb || 'unknown_scan'; 
+      const filename = `${finalAwb}.${ext}`;
+      
+      setUploadQueue(prev => [...prev, {
+          id: Date.now().toString(),
+          blob,
+          awb: finalAwb,
+          filename,
+          mimeType,
+          status: 'PENDING'
+      }]);
+  }, []);
+
+  // --- 1. RECORDING START (Fixed Race Condition) ---
   const triggerRecordStart = (videoElement: HTMLVideoElement) => {
       if (!videoElement.srcObject) return;
       
       const stream = videoElement.srcObject as MediaStream;
       
+      // *** FIX: Capture AWB value NOW, so it persists even if ref is cleared later ***
+      const currentSessionAwb = awbRef.current; 
+
       let mimeType = 'video/webm';
       if (MediaRecorder.isTypeSupported('video/mp4')) {
           mimeType = 'video/mp4'; 
@@ -80,8 +100,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       try {
           const mediaRecorder = new MediaRecorder(stream, { 
               mimeType,
-              // PERFORMANCE HACK: 2.5 Mbps is HD quality but 5x smaller file size
-              videoBitsPerSecond: 2500000 
+              videoBitsPerSecond: 2500000 // 2.5 Mbps
           });
           
           mediaRecorderRef.current = mediaRecorder;
@@ -93,7 +112,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
           mediaRecorder.onstop = () => {
               const blob = new Blob(chunksRef.current, { type: mimeType });
-              addToQueue(blob, awbRef.current, mimeType);
+              // *** FIX: Use the captured variable, NOT awbRef.current ***
+              addToQueue(blob, currentSessionAwb, mimeType);
           };
 
           mediaRecorder.start();
@@ -104,21 +124,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }
   };
 
-  // --- 2. QUEUE MANAGEMENT ---
-  const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
-      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      const filename = `${recordedAwb || 'scan'}.${ext}`;
-      
-      setUploadQueue(prev => [...prev, {
-          id: Date.now().toString(),
-          blob,
-          awb: recordedAwb,
-          filename,
-          mimeType,
-          status: 'PENDING'
-      }]);
-  }, []);
-
   const stopRecording = useCallback(() => {
       playTone(150, 'sawtooth', 0.3);
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -126,6 +131,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }
       setStatus('IDLE');
       setAwb('');
+      awbRef.current = ''; // This wipes the global ref, but 'currentSessionAwb' inside the recorder is safe!
       lastSeenCodeRef.current = null;
       if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
   }, []);
@@ -183,15 +189,13 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
     }
   });
 
-  // --- 4. PARALLEL UPLOAD ENGINE (FIXED) ---
+  // --- 4. PARALLEL UPLOAD ENGINE ---
   useEffect(() => {
       const pendingItems = uploadQueue.filter(item => item.status === 'PENDING');
       
-      // Allow up to 2 concurrent uploads
       if (pendingItems.length > 0 && activeUploads < 2) {
           const itemToUpload = pendingItems[0];
           
-          // Mark as uploading immediately so it's not picked up again
           setUploadQueue(prev => prev.map(i => 
               i.id === itemToUpload.id ? { ...i, status: 'UPLOADING' } : i
           ));
@@ -199,10 +203,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
           const performUpload = async () => {
               try {
-                  // A. Get Token & URL from Backend
                   const tokenRes = await api.getUploadToken(itemToUpload.filename, itemToUpload.mimeType);
                   
-                  // B. Upload to Google Drive (PUT Request)
                   const googleRes = await fetch(tokenRes.uploadUrl, {
                       method: 'PUT',
                       headers: { 'Content-Type': itemToUpload.mimeType },
@@ -211,26 +213,20 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   if (!googleRes.ok) throw new Error("Google Drive Upload Failed");
                   
-                  // *** CRITICAL FIX START: Extract Real File ID ***
-                  // Google returns the metadata (including ID) in the body of the PUT response
                   const googleData = await googleRes.json();
                   const realFileId = googleData.id; 
 
                   if (!realFileId) throw new Error("Google Upload succeeded but returned no ID");
-                  // *** CRITICAL FIX END ***
 
-                  // C. Send to Backend (Fulfillment) with the CORRECT ID
                   await api.completeFulfillment({
                       awb: itemToUpload.awb,
                       videoUrl: `https://drive.google.com/file/d/${realFileId}/view`,
                       folderId: tokenRes.folderId || '' 
                   });
 
-                  // Success: Remove from queue
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } catch (e) {
                   console.error("Upload failed", e);
-                  // Remove failed item to prevent blocking queue (or implement retry logic here)
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } finally {
                   setActiveUploads(prev => prev - 1);
