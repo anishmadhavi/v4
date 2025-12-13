@@ -226,9 +226,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                   });
 
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
-              } catch (e) {
+              } catch (e: any) {
                   console.error("❌ Fulfillment failed", e);
-                  alert("Fulfillment failed. Check logs.");
+                  alert(`FAILED: ${e.message}`);
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } finally {
                   setActiveUploads(prev => prev - 1);
