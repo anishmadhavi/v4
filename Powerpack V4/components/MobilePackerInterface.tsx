@@ -67,12 +67,10 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 2. QUEUE MANAGEMENT ---
   const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
       const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      // Fallback to 'scan' if AWB is somehow missing, but this fix prevents that
       const finalAwb = recordedAwb || 'unknown_scan'; 
       const filename = `${finalAwb}.${ext}`;
       
-      // DEBUG 1: Verify we actually have the AWB
-      // alert(`DEBUG: Queueing AWB: ${finalAwb}`);
-
       setUploadQueue(prev => [...prev, {
           id: Date.now().toString(),
           blob,
@@ -89,7 +87,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       
       const stream = videoElement.srcObject as MediaStream;
       
-      // CAPTURE AWB NOW
+      // *** FIX: Capture AWB value NOW, so it persists even if ref is cleared later ***
       const currentSessionAwb = awbRef.current; 
 
       let mimeType = 'video/webm';
@@ -102,7 +100,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       try {
           const mediaRecorder = new MediaRecorder(stream, { 
               mimeType,
-              videoBitsPerSecond: 2500000 
+              videoBitsPerSecond: 2500000 // 2.5 Mbps
           });
           
           mediaRecorderRef.current = mediaRecorder;
@@ -114,6 +112,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
           mediaRecorder.onstop = () => {
               const blob = new Blob(chunksRef.current, { type: mimeType });
+              // *** FIX: Use the captured variable, NOT awbRef.current ***
               addToQueue(blob, currentSessionAwb, mimeType);
           };
 
@@ -132,7 +131,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }
       setStatus('IDLE');
       setAwb('');
-      awbRef.current = ''; 
+      awbRef.current = ''; // This wipes the global ref, but 'currentSessionAwb' inside the recorder is safe!
       lastSeenCodeRef.current = null;
       if (stableTimerRef.current) clearTimeout(stableTimerRef.current);
   }, []);
@@ -212,18 +211,12 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       body: itemToUpload.blob
                   });
 
-                  if (!googleRes.ok) throw new Error(`Google Upload Failed: ${googleRes.status}`);
+                  if (!googleRes.ok) throw new Error("Google Drive Upload Failed");
                   
-                  // DEBUG 2: Check if we are crashing here
-                  // alert("DEBUG: Upload Done. Parsing JSON...");
-
                   const googleData = await googleRes.json();
                   const realFileId = googleData.id; 
 
-                  if (!realFileId) throw new Error("No ID in Google Response");
-
-                  // DEBUG 3: Check if we are crashing before Backend
-                  // alert(`DEBUG: Got ID ${realFileId}. Triggering Fulfillment for AWB: ${itemToUpload.awb}`);
+                  if (!realFileId) throw new Error("Google Upload succeeded but returned no ID");
 
                   await api.completeFulfillment({
                       awb: itemToUpload.awb,
@@ -231,13 +224,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       folderId: tokenRes.folderId || '' 
                   });
 
-                  // DEBUG 4: Success
-                  // alert("DEBUG: Backend Success! Check Sheet.");
-
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
-              } catch (e: any) {
-                  // *** THIS IS THE IMPORTANT PART ***
-                  alert(`UPLOAD ERROR: ${e.message}`);
+              } catch (e) {
                   console.error("Upload failed", e);
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } finally {
