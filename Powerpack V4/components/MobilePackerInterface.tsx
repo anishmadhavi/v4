@@ -67,7 +67,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   // --- 2. QUEUE MANAGEMENT ---
   const addToQueue = useCallback((blob: Blob, recordedAwb: string, mimeType: string) => {
       const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-      // Fallback to 'scan' if AWB is somehow missing, but this fix prevents that
+      // Fallback to 'scan' if AWB is somehow missing
       const finalAwb = recordedAwb || 'unknown_scan'; 
       const filename = `${finalAwb}.${ext}`;
       
@@ -219,16 +219,20 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                   if (!realFileId) throw new Error("Google Upload succeeded but returned no ID");
 
                   await api.completeFulfillment({
-                      stage: 1, // 🔴 FORCE STAGE-1
+                      stage: 1, // FORCE STAGE 1
                       awb: itemToUpload.awb,
                       videoUrl: `https://drive.google.com/file/d/${realFileId}/view`,
                       folder_id: tokenRes.folderId || null 
                   });
 
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
-              } catch (e) {
+              } catch (e: any) {
                   console.error("❌ Fulfillment failed", e);
-                  alert("Fulfillment failed. Check logs.");
+                  
+                  // *** CRITICAL UPDATE: Show the REAL error message ***
+                  // This will tell us if it's 404 (URL Error) or 500 (Server Error)
+                  alert(`FAILED: ${e.message}`);
+                  
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
               } finally {
                   setActiveUploads(prev => prev - 1);
