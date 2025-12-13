@@ -142,7 +142,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       try {
           const mediaRecorder = new MediaRecorder(stream, { 
               mimeType,
-              videoBitsPerSecond: 2500000 // 2.5 Mbps for quality
+              videoBitsPerSecond: 2500000
           });
           
           mediaRecorderRef.current = mediaRecorder;
@@ -157,7 +157,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           mediaRecorder.onstop = () => {
               const blob = new Blob(chunksRef.current, { type: mimeType });
               console.log(`✅ Recording stopped: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
-              // ✅ Use parameter passed from confirmScan, not ref
               addToQueue(blob, awbToUse, mimeType);
           };
 
@@ -197,7 +196,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
   const confirmScan = useCallback((code: string, videoElement: HTMLVideoElement) => {
       let cleanCode = code.trim();
       
-      // Handle duplicate barcodes (some scanners read twice)
       if (cleanCode.length > 8 && cleanCode.length % 2 === 0) {
         const half = cleanCode.length / 2;
         if (cleanCode.slice(0, half) === cleanCode.slice(half)) {
@@ -215,7 +213,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
 
-      // ✅ Pass AWB as parameter to avoid any timing issues
       setTimeout(() => {
           triggerRecordStart(videoElement, cleanCode);
       }, 500); 
@@ -227,7 +224,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
     const rawCode = result.getText();
     if (!rawCode || rawCode.trim().length === 0) return;
 
-    // New code detected - reset stabilization
     if (rawCode !== lastSeenCodeRef.current) {
         lastSeenCodeRef.current = rawCode;
         setStatus('STABILIZING'); 
@@ -236,7 +232,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             clearTimeout(stableTimerRef.current);
         }
         
-        // Wait 2 seconds to ensure code is stable
         stableTimerRef.current = setTimeout(() => {
             const videoEl = document.querySelector('video'); 
             if (videoEl && lastSeenCodeRef.current === rawCode) {
@@ -258,9 +253,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
     }
   });
 
-  // --- PARALLEL UPLOAD ENGINE WITH SMART RETRY & ENHANCED DEBUG ---
+  // --- PARALLEL UPLOAD ENGINE WITH ENHANCED DEBUG ---
   useEffect(() => {
-      // Only process if online
       if (!isOnline) {
           console.log("⏸️ Offline - pausing uploads");
           return;
@@ -273,7 +267,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       if (pendingItems.length > 0 && activeUploads < 2) {
           const itemToUpload = pendingItems[0];
           
-          // Max 3 retries
           if (itemToUpload.retryCount >= 3) {
               console.error("❌ Max retries reached for:", itemToUpload.awb);
               alert(`Upload failed after 3 attempts: ${itemToUpload.awb}\n\nError: ${itemToUpload.error || 'Unknown'}\n\nRemoving from queue.`);
@@ -281,7 +274,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               return;
           }
 
-          // Update status to uploading
           setUploadQueue(prev => prev.map(i => 
               i.id === itemToUpload.id 
                 ? { ...i, status: 'UPLOADING' as const, retryCount: i.retryCount + 1 } 
@@ -294,7 +286,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
               console.log(`⬆️ Upload attempt ${attemptNum}/3:`, itemToUpload.awb);
 
               try {
-                  // Step 1: Get upload token
                   console.log("🔐 Step 1/4: Getting upload token...");
                   const tokenRes = await api.getUploadToken(
                       itemToUpload.filename, 
@@ -307,7 +298,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   console.log("✅ Step 1 complete - Token received");
 
-                  // Step 2: Create file metadata first
                   console.log("🔐 Step 2/4: Creating file in Drive...");
                   
                   const metadata = tokenRes.metadata ? JSON.parse(tokenRes.metadata) : {
@@ -340,7 +330,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   console.log("✅ Step 2 complete: File created:", realFileId);
 
-                  // Step 3: Upload content to the file
                   console.log("📤 Step 3/4: Uploading video content...");
 
                   const uploadContentRes = await fetch(
@@ -363,7 +352,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
                   console.log("✅ Step 3 complete: Content uploaded");
 
-                  // Step 4: Complete fulfillment (log to DB + append to Sheet)
                   console.log("📊 Step 4/4: Completing fulfillment...");
                   
                   const fulfillmentData = {
@@ -390,7 +378,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                   console.log("✅ Step 4 complete: All done!");
                   console.log("🎉 SUCCESS:", itemToUpload.awb);
 
-                  // Success! Remove from queue
                   setUploadQueue(prev => prev.filter(i => i.id !== itemToUpload.id));
                   setTotalUploaded(prev => prev + 1);
                   playTone(660, 'sine', 0.15);
@@ -400,25 +387,20 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                   console.error("   Full error:", e);
                   console.error("   Error stack:", e.stack);
                   
-                  // Store error for display
                   setLastError(e.message);
                   
-                  // Mark as failed (will retry automatically)
                   setUploadQueue(prev => prev.map(i => 
                       i.id === itemToUpload.id 
                         ? { ...i, status: 'FAILED' as const, error: e.message } 
                         : i
                   ));
 
-                  // Play error sound
                   playTone(220, 'square', 0.2);
 
-                  // Show alert on first failure so user knows what's wrong
                   if (attemptNum === 1) {
                       alert(`Upload Error (will retry):\n\n${e.message}\n\nAWB: ${itemToUpload.awb}`);
                   }
 
-                  // If network error, wait before retry
                   if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
                       console.log("⏳ Network error, waiting 5s before retry...");
                       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -450,7 +432,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden flex flex-col" onClick={() => !audioEnabled && enableAudio()}>
-        {/* HEADER */}
         <div className="absolute top-0 left-0 right-0 z-20 p-4 flex justify-between items-start bg-gradient-to-b from-black/90 to-transparent">
             <div>
                 <h1 className="text-white font-bold text-lg drop-shadow-md">{packer.name}</h1>
@@ -478,7 +459,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                        </div>
                    )}
                    
-                   {/* Network Status */}
                    <div className={`flex items-center gap-1 text-xs ${isOnline ? 'text-green-400' : 'text-red-400'}`}>
                        {isOnline ? <Wifi size={10}/> : <WifiOff size={10}/>}
                        <span>{isOnline ? 'Online' : 'Offline'}</span>
@@ -495,7 +475,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         </div>
 
-        {/* CAMERA FEED */}
         <video 
             ref={videoRef}
             className="absolute inset-0 w-full h-full object-cover"
@@ -504,7 +483,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             autoPlay
         />
 
-        {/* FEEDBACK: STABILIZING */}
         {status === 'STABILIZING' && (
              <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center bg-black/20">
                  <div className="absolute inset-4 border-4 border-yellow-400/50 rounded-2xl animate-pulse"></div>
@@ -516,7 +494,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
              </div>
         )}
 
-        {/* FEEDBACK: DETECTED */}
         {status === 'DETECTED' && (
             <div className="absolute inset-0 z-30 flex items-center justify-center bg-green-500/20 backdrop-blur-sm pointer-events-none">
                 <div className="bg-green-600 text-white px-10 py-8 rounded-3xl shadow-2xl animate-bounce">
@@ -526,7 +503,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* RECORDING MODE */}
         {status === 'RECORDING' && (
             <div 
                 onClick={(e) => { e.stopPropagation(); stopRecording(); }}
@@ -547,7 +523,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* IDLE GUIDE */}
         {status === 'IDLE' && (
             <div className="absolute inset-0 pointer-events-none z-10 flex flex-col items-center justify-center">
                  {!audioEnabled && (
@@ -570,7 +545,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
         
-        {/* BOTTOM QUEUE INDICATOR */}
         {uploadQueue.length > 0 && status === 'IDLE' && (
             <div className="absolute bottom-4 left-4 right-4 bg-black/70 backdrop-blur-md rounded-2xl p-4 z-20 border border-white/10">
                 <div className="flex items-center justify-between text-white text-sm">
@@ -589,7 +563,6 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
             </div>
         )}
 
-        {/* ERROR DISPLAY */}
         {lastError && status === 'IDLE' && (
             <div className="absolute top-1/2 left-4 right-4 transform -translate-y-1/2 bg-red-600 text-white rounded-2xl p-4 z-30 shadow-2xl">
                 <div className="flex items-start justify-between gap-2">
