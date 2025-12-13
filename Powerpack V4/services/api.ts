@@ -237,7 +237,6 @@ export const api = {
   },
 
   // --- FULFILLMENT ---
-
   async completeFulfillment(data: {
   stage?: number;
   awb: string;
@@ -251,20 +250,23 @@ export const api = {
     throw new Error("User is not authenticated. Cannot complete fulfillment.");
   }
 
-  const response = await fetch(`${FUNCTION_BASE_URL}/fulfillment`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify({
-      stage: data.stage ?? 1,
-      awb: data.awb,
-      videoUrl: data.videoUrl,
-      folder_id: data.folder_id,
-      duration: data.duration,
-    }),
-  });
+  const response = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/complete-fulfillment`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        stage: data.stage ?? 1,
+        awb: data.awb,
+        videoUrl: data.videoUrl,
+        folder_id: data.folder_id,
+        duration: data.duration,
+      }),
+    }
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
