@@ -232,6 +232,7 @@ export const api = {
   },
 
   // --- FULFILLMENT (FIXED) ---
+  // This uses the official SDK to bypass "Load Failed" network errors
   async completeFulfillment(data: {
     stage?: number;
     awb: string;
@@ -239,30 +240,30 @@ export const api = {
     folder_id: string | null;
     duration?: number;
   }) {
+    // 1. Get the session (still needed for context)
     const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error("No active session");
 
-    if (!session?.access_token) {
-      throw new Error("User is not authenticated. Cannot complete fulfillment.");
+    // 2. Use SDK 'invoke' instead of 'fetch'
+    // This handles the URL, Headers, and CORS handshake automatically.
+    const { data: responseData, error } = await supabase.functions.invoke('fulfillment', {
+      body: {
+        stage: data.stage ?? 1,
+        awb: data.awb,
+        videoUrl: data.videoUrl,
+        folder_id: data.folder_id,
+        duration: data.duration,
+      }
+    });
+
+    if (error) {
+      // This reveals the REAL error (e.g. "Function not found" or "Auth error")
+      console.error("SDK Fulfillment Error:", error);
+      throw new Error(`Fulfillment failed: ${error.message}`);
     }
 
-    // DEBUG: This helps us see if the URL is correct in the alert if it fails again
-    const targetUrl = `${FUNCTION_BASE_URL}/fulfillment`;
-
-    const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          stage: data.stage ?? 1,
-          awb: data.awb,
-          videoUrl: data.videoUrl,
-          folder_id: data.folder_id,
-          duration: data.duration,
-        }),
-      }
-    );
+    return responseData || { success: true };
+  },
 
     if (!response.ok) {
       const errorText = await response.text();
