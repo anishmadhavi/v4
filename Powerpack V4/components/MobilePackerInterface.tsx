@@ -114,20 +114,17 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       }]);
   }, []);
 
-  // --- RECORDING START (Race Condition Fixed) ---
-  const triggerRecordStart = useCallback((videoElement: HTMLVideoElement) => {
+  // --- RECORDING START (✅ Race Condition FULLY Fixed) ---
+  const triggerRecordStart = useCallback((videoElement: HTMLVideoElement, awbToUse: string) => {
       if (!videoElement.srcObject) {
           console.error("No video source available");
           return;
       }
       
       const stream = videoElement.srcObject as MediaStream;
-      
-      // ✅ FIX: Capture AWB NOW before any state changes
-      const currentSessionAwb = awbRef.current; 
 
-      if (!currentSessionAwb) {
-          console.error("No AWB captured!");
+      if (!awbToUse) {
+          console.error("No AWB provided!");
           return;
       }
 
@@ -140,7 +137,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           mimeType = 'video/webm;codecs=h264';
       }
 
-      console.log(`🎥 Starting recording: ${currentSessionAwb} (${mimeType})`);
+      console.log(`🎥 Starting recording: ${awbToUse} (${mimeType})`);
 
       try {
           const mediaRecorder = new MediaRecorder(stream, { 
@@ -160,8 +157,8 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
           mediaRecorder.onstop = () => {
               const blob = new Blob(chunksRef.current, { type: mimeType });
               console.log(`✅ Recording stopped: ${(blob.size / 1024 / 1024).toFixed(2)} MB`);
-              // ✅ Use captured variable, NOT awbRef.current
-              addToQueue(blob, currentSessionAwb, mimeType);
+              // ✅ Use parameter passed from confirmScan, not ref
+              addToQueue(blob, awbToUse, mimeType);
           };
 
           mediaRecorder.onerror = (e) => {
@@ -218,9 +215,9 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
       setStatus('DETECTED');
       if (navigator.vibrate) navigator.vibrate(200);
 
-      // Short delay before recording for user feedback
+      // ✅ Pass AWB as parameter to avoid any timing issues
       setTimeout(() => {
-          triggerRecordStart(videoElement);
+          triggerRecordStart(videoElement, cleanCode);
       }, 500); 
   }, [triggerRecordStart]);
 
@@ -298,7 +295,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
 
               try {
                   // Step 1: Get upload token
-                  console.log("📝 Step 1/4: Getting upload token...");
+                  console.log("🔐 Step 1/4: Getting upload token...");
                   const tokenRes = await api.getUploadToken(
                       itemToUpload.filename, 
                       itemToUpload.mimeType
@@ -311,7 +308,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                   console.log("✅ Step 1 complete");
 
                   // Step 2: Create file metadata first
-                  console.log("📝 Step 2/4: Creating file in Drive...");
+                  console.log("🔐 Step 2/4: Creating file in Drive...");
                   
                   const metadata = tokenRes.metadata ? JSON.parse(tokenRes.metadata) : {
                       name: itemToUpload.filename,
@@ -380,7 +377,7 @@ const MobilePackerInterface: React.FC<Props> = ({ packer, onLogout }) => {
                       const fulfillmentRes = await api.completeFulfillment(fulfillmentData);
                       console.log("   Fulfillment response:", JSON.stringify(fulfillmentRes));
                   } catch (fulfillErr: any) {
-                      throw new Error(`STEP 3 FAILED: ${fulfillErr.message}`);
+                      throw new Error(`STEP 4 FAILED: ${fulfillErr.message}`);
                   }
 
                   console.log("✅ Step 4 complete: All done!");
